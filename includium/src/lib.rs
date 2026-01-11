@@ -20,7 +20,7 @@
 //! ## Example
 //!
 //! ```rust,no_run
-//! use includium::{preprocess_c_code, PreprocessorConfig};
+//! use includium::PreprocessorConfig;
 //!
 //! let code = r#"#
 //! #define PI 3.14
@@ -30,7 +30,7 @@
 //! "#;
 //!
 //! let config = PreprocessorConfig::for_linux();
-//! let result = preprocess_c_code(code, &config).unwrap();
+//! let result = includium::process(code, &config).unwrap();
 //! println!("{}", result);
 //! ```
 
@@ -57,7 +57,7 @@ use std::path::Path;
 /// # Errors
 /// Returns `PreprocessError` if the input code has malformed directives,
 /// macro recursion limits are exceeded, or I/O errors occur during include resolution.
-pub fn preprocess_c_code<S: AsRef<str>>(
+pub fn process<S: AsRef<str>>(
     input: S,
     config: &PreprocessorConfig,
 ) -> Result<String, PreprocessError> {
@@ -71,13 +71,13 @@ pub fn preprocess_c_code<S: AsRef<str>>(
 /// # Errors
 /// Returns `PreprocessError` if the input file cannot be read,
 /// the output file cannot be written, or if preprocessing fails.
-pub fn preprocess_c_file<P: AsRef<Path>>(
+pub fn process_file<P: AsRef<Path>>(
     input_path: P,
     output_path: P,
     config: &PreprocessorConfig,
 ) -> Result<(), PreprocessError> {
     let input = std::fs::read_to_string(input_path)?;
-    let output = preprocess_c_code(&input, config)?;
+    let output = process(&input, config)?;
     std::fs::write(output_path, output)?;
     Ok(())
 }
@@ -91,7 +91,7 @@ pub fn preprocess_c_file_to_string<P: AsRef<Path>>(
     config: &PreprocessorConfig,
 ) -> Result<String, PreprocessError> {
     let input = std::fs::read_to_string(input_path)?;
-    preprocess_c_code(&input, config)
+    process(&input, config)
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 #![warn(clippy::unwrap_used)]
 #![warn(clippy::expect_used)]
 
-use includium::{PreprocessorConfig, preprocess_c_code};
+use includium::PreprocessorConfig;
 
 fn main() {
     let src = r#"
@@ -19,14 +19,14 @@ int y = ADD(1, 2);
 
     // Test the new high-level API
     let config = PreprocessorConfig::for_linux();
-    match preprocess_c_code(src, &config) {
+    match includium::process(src, &config) {
         Ok(result) => println!("High-level API result:\n{result}"),
         Err(e) => eprintln!("Error: {e}"),
     }
 
     // Test with Windows config
     let windows_config = PreprocessorConfig::for_windows();
-    match preprocess_c_code(src, &windows_config) {
+    match includium::process(src, &windows_config) {
         Ok(result) => println!("\nWindows config result:\n{result}"),
         Err(e) => eprintln!("Error: {e}"),
     }
