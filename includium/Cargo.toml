@@ -2,6 +2,12 @@
 name = "includium"
 version = "0.0.0"
 edition = "2024"
+description = "A complete C preprocessor implementation in Rust."
+license = "MPL-2.0"
+repository = "https://github.com/walker84837/includium"
+readme = "../README.md"
+keywords = ["c", "preprocessor"]
+categories = ["development-tools"]
 
 [lib]
 name = "includium"
