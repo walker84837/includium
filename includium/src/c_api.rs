@@ -3,7 +3,7 @@ use std::os::raw::{c_char, c_int};
 use std::rc::Rc;
 
 use crate::config::{Compiler, PreprocessorConfig, Target};
-use crate::preprocessor::Preprocessor;
+use crate::driver::PreprocessorDriver;
 
 /// C-friendly configuration struct for the preprocessor
 #[repr(C)]
@@ -68,16 +68,18 @@ fn preprocessor_config_from_c(
 /// This function is safe to call from C code.
 /// If config is null, uses default configuration.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn includium_new(config: *const includium_config_t) -> *mut Preprocessor {
-    let mut pp = Preprocessor::new();
+pub unsafe extern "C" fn includium_new(
+    config: *const includium_config_t,
+) -> *mut PreprocessorDriver {
+    let mut driver = PreprocessorDriver::new();
     if !config.is_null() {
         let c_config = unsafe { &*config };
         match preprocessor_config_from_c(c_config) {
-            Ok(rust_config) => pp.apply_config(&rust_config),
+            Ok(rust_config) => driver.apply_config(&rust_config),
             Err(_) => return std::ptr::null_mut(), // Invalid config
         }
     }
-    Box::into_raw(Box::new(pp))
+    Box::into_raw(Box::new(driver))
 }
 
 /// Free a preprocessor instance created by C API
@@ -85,7 +87,7 @@ pub unsafe extern "C" fn includium_new(config: *const includium_config_t) -> *mu
 /// # Safety
 /// The pointer must have been created by `includium_new` and not already freed.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn includium_free(pp: *mut Preprocessor) {
+pub unsafe extern "C" fn includium_free(pp: *mut PreprocessorDriver) {
     if !pp.is_null() {
         unsafe {
             drop(Box::from_raw(pp));
@@ -101,7 +103,7 @@ pub unsafe extern "C" fn includium_free(pp: *mut Preprocessor) {
 /// - The returned string must be freed with `includium_free_result`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn includium_process(
-    pp: *mut Preprocessor,
+    pp: *mut PreprocessorDriver,
     input: *const c_char,
 ) -> *mut c_char {
     if pp.is_null() || input.is_null() {
@@ -109,8 +111,8 @@ pub unsafe extern "C" fn includium_process(
     }
 
     let input_str = unsafe { CStr::from_ptr(input).to_str().unwrap_or("") };
-    let preprocessor = unsafe { &mut *pp };
-    match preprocessor.process(input_str) {
+    let driver = unsafe { &mut *pp };
+    match driver.process(input_str) {
         Ok(result) => match CString::new(result) {
             Ok(cstr) => cstr.into_raw(),
             Err(_) => std::ptr::null_mut(),
