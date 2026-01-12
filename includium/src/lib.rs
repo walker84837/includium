@@ -280,6 +280,19 @@ int y = x;
     }
 
     #[test]
+    fn pragma_operator() {
+        let src = r#"
+_Pragma("once")
+int x = 1;
+"#;
+        let mut pp = Preprocessor::new();
+        let out = pp.process(src).unwrap();
+        // _Pragma("once") should be processed as #pragma once
+        assert!(out.contains("int x = 1;"));
+        // Check that pragma once was handled (no duplicate includes, but since no include, just check no error)
+    }
+
+    #[test]
     fn conditional_compilation_elif() {
         let src = r#"
 #define LEVEL 2

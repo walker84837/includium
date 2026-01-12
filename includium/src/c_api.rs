@@ -1,5 +1,6 @@
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
+use std::rc::Rc;
 
 use crate::config::{Compiler, PreprocessorConfig, Target};
 use crate::preprocessor::Preprocessor;
@@ -49,8 +50,8 @@ fn preprocessor_config_from_c(
         warning_handler: None,
     };
     if let Some(handler) = config.warning_handler {
-        let handler_rc = std::rc::Rc::new(move |msg: &str| {
-            let c_msg = match std::ffi::CString::new(msg) {
+        let handler_rc = Rc::new(move |msg: &str| {
+            let c_msg = match CString::new(msg) {
                 Ok(s) => s,
                 Err(_) => return,
             };

@@ -1,9 +1,13 @@
+use std::rc::Rc;
+
 use crate::token::Token;
 
 /// A preprocessor macro definition
 #[derive(Clone, Debug)]
 pub struct Macro {
     pub(crate) params: Option<Vec<String>>,
-    pub(crate) body: Vec<Token>,
+    pub(crate) body: Rc<Vec<Token>>,
     pub(crate) is_variadic: bool,
+    pub(crate) definition_location: Option<(String, usize)>,
+    pub(crate) is_builtin: bool,
 }

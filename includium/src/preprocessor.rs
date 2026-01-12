@@ -31,6 +31,7 @@ pub struct Preprocessor {
     pub(crate) current_file: String,
     included_once: HashSet<String>,
     include_stack: Vec<String>,
+    disabled_macros: HashSet<String>,
     warning_handler: Option<WarningHandler>,
     compiler: Compiler,
 }
@@ -54,6 +55,7 @@ impl Preprocessor {
             current_file: "<stdin>".to_string(),
             included_once: HashSet::new(),
             include_stack: Vec::new(),
+            disabled_macros: HashSet::new(),
             warning_handler: None,
             compiler: Compiler::GCC,
         }
@@ -84,20 +86,20 @@ impl Preprocessor {
     fn define_target_macros(&mut self, target: &Target) {
         match target {
             Target::Linux => {
-                self.define("__linux__", None, "1", false);
-                self.define("__unix__", None, "1", false);
-                self.define("__LP64__", None, "1", false);
+                self.define_builtin("__linux__", None, "1", false);
+                self.define_builtin("__unix__", None, "1", false);
+                self.define_builtin("__LP64__", None, "1", false);
             }
             Target::Windows => {
-                self.define("_WIN32", None, "1", false);
-                self.define("WIN32", None, "1", false);
-                self.define("_WINDOWS", None, "1", false);
+                self.define_builtin("_WIN32", None, "1", false);
+                self.define_builtin("WIN32", None, "1", false);
+                self.define_builtin("_WINDOWS", None, "1", false);
             }
             Target::MacOS => {
-                self.define("__APPLE__", None, "1", false);
-                self.define("__MACH__", None, "1", false);
-                self.define("TARGET_OS_MAC", None, "1", false);
-                self.define("__LP64__", None, "1", false);
+                self.define_builtin("__APPLE__", None, "1", false);
+                self.define_builtin("__MACH__", None, "1", false);
+                self.define_builtin("TARGET_OS_MAC", None, "1", false);
+                self.define_builtin("__LP64__", None, "1", false);
             }
         }
     }
@@ -106,24 +108,24 @@ impl Preprocessor {
         match compiler {
             Compiler::GCC => {
                 // GCC 11.2.0 (common in many Linux distributions)
-                self.define("__GNUC__", None, "11", false);
-                self.define("__GNUC_MINOR__", None, "2", false);
-                self.define("__GNUC_PATCHLEVEL__", None, "0", false);
-                self.define("_GNU_SOURCE", None, "1", false);
+                self.define_builtin("__GNUC__", None, "11", false);
+                self.define_builtin("__GNUC_MINOR__", None, "2", false);
+                self.define_builtin("__GNUC_PATCHLEVEL__", None, "0", false);
+                self.define_builtin("_GNU_SOURCE", None, "1", false);
             }
             Compiler::Clang => {
                 // Clang 14.0.0 (matches Xcode 13.1)
-                self.define("__clang__", None, "1", false);
-                self.define("__clang_major__", None, "14", false);
-                self.define("__clang_minor__", None, "0", false);
-                self.define("__clang_patchlevel__", None, "0", false);
+                self.define_builtin("__clang__", None, "1", false);
+                self.define_builtin("__clang_major__", None, "14", false);
+                self.define_builtin("__clang_minor__", None, "0", false);
+                self.define_builtin("__clang_patchlevel__", None, "0", false);
             }
             Compiler::MSVC => {
                 // MSVC 19.20 (Visual Studio 2019)
-                self.define("_MSC_VER", None, "1920", false);
-                self.define("_MSC_FULL_VER", None, "192027508", false);
-                self.define("WIN32_LEAN_AND_MEAN", None, "", false);
-                self.define("_CRT_SECURE_NO_WARNINGS", None, "", false);
+                self.define_builtin("_MSC_VER", None, "1920", false);
+                self.define_builtin("_MSC_FULL_VER", None, "192027508", false);
+                self.define_builtin("WIN32_LEAN_AND_MEAN", None, "", false);
+                self.define_builtin("_CRT_SECURE_NO_WARNINGS", None, "", false);
             }
         }
     }
@@ -157,21 +159,41 @@ impl Preprocessor {
         body: S,
         is_variadic: bool,
     ) {
+        self.define_macro(name, params, body, is_variadic, false);
+    }
+
+    fn define_builtin<S: AsRef<str>>(
+        &mut self,
+        name: S,
+        params: Option<Vec<String>>,
+        body: S,
+        is_variadic: bool,
+    ) {
+        self.define_macro(name, params, body, is_variadic, true);
+    }
+
+    fn define_macro<S: AsRef<str>>(
+        &mut self,
+        name: S,
+        params: Option<Vec<String>>,
+        body: S,
+        is_variadic: bool,
+        is_builtin: bool,
+    ) {
         let stripped_body = Self::strip_comments(body.as_ref());
-        let parts: Vec<&str> = stripped_body.split_whitespace().collect();
-        let mut body_tokens = Vec::new();
-        for (i, part) in parts.iter().enumerate() {
-            body_tokens.extend(Self::tokenize_line(part));
-            if i < parts.len() - 1 {
-                body_tokens.push(Token::Other(" ".to_string()));
-            }
-        }
+        let body_tokens = Self::tokenize_line(&stripped_body);
         self.macros.insert(
             name.as_ref().to_string(),
             Macro {
                 params,
-                body: body_tokens,
+                body: Rc::new(body_tokens),
                 is_variadic,
+                definition_location: if is_builtin {
+                    None
+                } else {
+                    Some((self.current_file.clone(), self.current_line))
+                },
+                is_builtin,
             },
         );
     }
@@ -200,11 +222,12 @@ impl Preprocessor {
     /// macro recursion limit is exceeded, or conditional blocks are unterminated.
     pub fn process(&mut self, input: &str) -> Result<String, PreprocessError> {
         let spliced = Self::line_splice(input);
+        let pragma_processed = Self::process_pragma(&spliced);
         let mut out_lines: Vec<String> = Vec::new();
         self.conditional_stack.clear();
         self.current_line = 1;
 
-        for line in spliced.lines() {
+        for line in pragma_processed.lines() {
             if let Some(directive) = Self::extract_directive(line) {
                 if let Some(content) = self.handle_directive(directive, line)? {
                     out_lines.push(content);
@@ -277,6 +300,69 @@ impl Preprocessor {
             }
         }
         out
+    }
+
+    /// Process _Pragma operators in a line, replacing with #pragma directives
+    fn process_pragma(line: &str) -> String {
+        let mut result = String::with_capacity(line.len());
+        let mut i = 0;
+        let chars: Vec<char> = line.chars().collect();
+
+        while i < chars.len() {
+            if i + 7 <= chars.len() && &chars[i..i + 7] == &['_', 'P', 'r', 'a', 'g', 'm', 'a'] {
+                // Found _Pragma, look for (
+                let mut j = i + 7;
+                while j < chars.len() && chars[j].is_whitespace() {
+                    j += 1;
+                }
+                if j < chars.len() && chars[j] == '(' {
+                    j += 1;
+                    // Parse the string
+                    if j < chars.len() && chars[j] == '"' {
+                        j += 1;
+                        let mut string_content = String::new();
+                        while j < chars.len() {
+                            if chars[j] == '"' {
+                                // Check for escape
+                                let mut backslash_count = 0;
+                                let mut k = j - 1;
+                                while k > 0 && chars[k] == '\\' {
+                                    backslash_count += 1;
+                                    k -= 1;
+                                }
+                                if backslash_count % 2 == 0 {
+                                    // End of string
+                                    break;
+                                } else {
+                                    string_content.push(chars[j]);
+                                }
+                            } else {
+                                string_content.push(chars[j]);
+                            }
+                            j += 1;
+                        }
+                        if j < chars.len() && chars[j] == '"' {
+                            j += 1;
+                            // Skip whitespace and )
+                            while j < chars.len() && chars[j].is_whitespace() {
+                                j += 1;
+                            }
+                            if j < chars.len() && chars[j] == ')' {
+                                j += 1;
+                                // Replace with #pragma
+                                result.push_str("#pragma ");
+                                result.push_str(&string_content);
+                                i = j;
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+            result.push(chars[i]);
+            i += 1;
+        }
+        result
     }
 
     fn extract_directive(line: &str) -> Option<&str> {
@@ -407,8 +493,10 @@ impl Preprocessor {
             name,
             Macro {
                 params,
-                body: body_tokens,
+                body: Rc::new(body_tokens),
                 is_variadic,
+                definition_location: Some((self.current_file.clone(), self.current_line)),
+                is_builtin: false,
             },
         );
         Ok(None)
@@ -489,6 +577,7 @@ impl Preprocessor {
             current_file: p.clone(),
             included_once: self.included_once.clone(),
             include_stack: self.include_stack.clone(),
+            disabled_macros: HashSet::new(),
             warning_handler: self.warning_handler.clone(),
             compiler: self.compiler.clone(),
         };
@@ -627,7 +716,7 @@ impl Preprocessor {
         }
     }
 
-    fn evaluate_expression(&self, expr: &str) -> Result<bool, PreprocessError> {
+    fn evaluate_expression(&mut self, expr: &str) -> Result<bool, PreprocessError> {
         let tokens = Self::tokenize_line(expr);
         let expanded = self.expand_tokens(&tokens, 0)?;
         let expr_str = Self::tokens_to_string(&expanded);
@@ -652,7 +741,7 @@ impl Preprocessor {
     ///
     /// # Errors
     /// Returns `PreprocessError` if the expression is malformed or has invalid operators.
-    pub fn parse_expression(&self, expr: &str) -> Result<bool, PreprocessError> {
+    pub fn parse_expression(&mut self, expr: &str) -> Result<bool, PreprocessError> {
         let tokens = Self::tokenize_expression(expr)?;
         let result = self.evaluate_expression_tokens(&tokens)?;
         Ok(result != 0)
@@ -1233,7 +1322,11 @@ impl Preprocessor {
         result
     }
 
-    fn expand_tokens(&self, tokens: &[Token], depth: usize) -> Result<Vec<Token>, PreprocessError> {
+    fn expand_tokens(
+        &mut self,
+        tokens: &[Token],
+        depth: usize,
+    ) -> Result<Vec<Token>, PreprocessError> {
         if depth > self.recursion_limit {
             return Err(PreprocessError::RecursionLimitExceeded(
                 "too deep".to_string(),
@@ -1248,8 +1341,10 @@ impl Preprocessor {
                     if let Some(token) = self.expand_predefined_macro(name) {
                         out.push(token);
                         i += 1;
-                    } else if let Some(mac) = self.macros.get(name) {
-                        i = self.handle_macro_invocation(mac, name, tokens, i, depth, &mut out)?;
+                    } else if self.macros.contains_key(name) && !self.disabled_macros.contains(name)
+                    {
+                        let mac = self.macros[name].clone();
+                        i = self.handle_macro_invocation(&mac, name, tokens, i, depth, &mut out)?;
                     } else {
                         out.push(tokens[i].clone());
                         i += 1;
@@ -1275,7 +1370,7 @@ impl Preprocessor {
     }
 
     fn handle_macro_invocation(
-        &self,
+        &mut self,
         mac: &Macro,
         name: &str,
         tokens: &[Token],
@@ -1283,15 +1378,22 @@ impl Preprocessor {
         depth: usize,
         out: &mut Vec<Token>,
     ) -> Result<usize, PreprocessError> {
-        let next_non_whitespace = self.find_next_non_whitespace(tokens, i + 1);
-        let is_function_like_invocation = mac.params.is_some()
-            && next_non_whitespace < tokens.len()
-            && matches!(&tokens[next_non_whitespace], Token::Other(s) if s.trim_start().starts_with('(') || s == "(");
-
-        if mac.params.is_some() && is_function_like_invocation {
-            self.handle_function_like_macro(mac, name, tokens, i, depth, out)
+        if mac.params.is_some() {
+            let next_non_whitespace = self.find_next_non_whitespace(tokens, i + 1);
+            let is_function_like_invocation = next_non_whitespace < tokens.len()
+                && matches!(&tokens[next_non_whitespace], Token::Other(s) if s.trim_start().starts_with('(') || s == "(");
+            if is_function_like_invocation {
+                self.handle_function_like_macro(mac, name, tokens, i, depth, out)
+            } else {
+                self.disabled_macros.insert(name.to_string());
+                self.handle_object_like_macro(mac, depth, out)?;
+                self.disabled_macros.remove(name);
+                Ok(i + 1)
+            }
         } else {
+            self.disabled_macros.insert(name.to_string());
             self.handle_object_like_macro(mac, depth, out)?;
+            self.disabled_macros.remove(name);
             Ok(i + 1)
         }
     }
@@ -1308,7 +1410,7 @@ impl Preprocessor {
     }
 
     fn handle_object_like_macro(
-        &self,
+        &mut self,
         mac: &Macro,
         depth: usize,
         out: &mut Vec<Token>,
@@ -1320,7 +1422,7 @@ impl Preprocessor {
     }
 
     fn handle_function_like_macro(
-        &self,
+        &mut self,
         mac: &Macro,
         name: &str,
         tokens: &[Token],
@@ -1346,7 +1448,9 @@ impl Preprocessor {
 
             let replaced = self.replace_macro_parameters(mac, name, &args, depth)?;
             let pasted = Self::apply_token_pasting(&replaced);
+            self.disabled_macros.insert(name.to_string());
             let expanded = self.expand_tokens(&pasted, depth + 1)?;
+            self.disabled_macros.remove(name);
             out.extend(expanded);
             return Ok(k);
         }
@@ -1449,7 +1553,7 @@ impl Preprocessor {
     }
 
     fn replace_macro_parameters(
-        &self,
+        &mut self,
         mac: &Macro,
         _name: &str,
         args: &[Vec<Token>],
@@ -1457,7 +1561,7 @@ impl Preprocessor {
     ) -> Result<Vec<Token>, PreprocessError> {
         let params_list = match &mac.params {
             Some(p) => p,
-            None => return Ok(mac.body.clone()),
+            None => return Ok(mac.body.as_ref().clone()),
         };
 
         let mut replaced = Vec::with_capacity(mac.body.len());
@@ -1536,16 +1640,16 @@ impl Preprocessor {
         ];
 
         for stub in stubs {
-            self.define(stub, None, "", false);
+            self.define_builtin(stub, None, "", false);
         }
     }
 
     fn define_sizeof_stubs(&mut self) {
         // This would need to know the target, but for simplicity we'll define basic ones
         // In a real implementation, this would be passed the target info
-        self.define("__SIZEOF_INT__", None, "4", false);
-        self.define("__SIZEOF_LONG__", None, "8", false);
-        self.define("__SIZEOF_POINTER__", None, "8", false);
-        self.define("__SIZEOF_LONG_LONG__", None, "8", false);
+        self.define_builtin("__SIZEOF_INT__", None, "4", false);
+        self.define_builtin("__SIZEOF_LONG__", None, "8", false);
+        self.define_builtin("__SIZEOF_POINTER__", None, "8", false);
+        self.define_builtin("__SIZEOF_LONG_LONG__", None, "8", false);
     }
 }
