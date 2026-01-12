@@ -181,7 +181,7 @@ impl Preprocessor {
         is_builtin: bool,
     ) {
         let stripped_body = Self::strip_comments(body.as_ref());
-        let body_tokens = Self::tokenize_line(&stripped_body);
+        let body_tokens = Self::tokenize_line(stripped_body.as_str());
         self.macros.insert(
             name.as_ref().to_string(),
             Macro {
@@ -309,7 +309,7 @@ impl Preprocessor {
         let chars: Vec<char> = line.chars().collect();
 
         while i < chars.len() {
-            if i + 7 <= chars.len() && &chars[i..i + 7] == &['_', 'P', 'r', 'a', 'g', 'm', 'a'] {
+            if i + 7 <= chars.len() && chars[i..i + 7] == ['_', 'P', 'r', 'a', 'g', 'm', 'a'] {
                 // Found _Pragma, look for (
                 let mut j = i + 7;
                 while j < chars.len() && chars[j].is_whitespace() {
@@ -488,7 +488,7 @@ impl Preprocessor {
         let body_str: String = chars.collect();
         let stripped = Self::strip_comments(&body_str);
         let stripped_body = stripped.trim();
-        let body_tokens = Self::tokenize_line(&stripped_body);
+        let body_tokens = Self::tokenize_line(stripped_body);
         self.macros.insert(
             name,
             Macro {

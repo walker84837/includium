@@ -10,21 +10,12 @@ pub enum IncludeKind {
 }
 
 /// Context for include resolution
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct IncludeContext {
     /// Stack of currently included files for cycle detection and context
     pub include_stack: Vec<String>,
     /// List of include directories to search
     pub include_dirs: Vec<String>,
-}
-
-impl Default for IncludeContext {
-    fn default() -> Self {
-        Self {
-            include_stack: Vec::new(),
-            include_dirs: Vec::new(),
-        }
-    }
 }
 
 /// Type alias for include resolver function
