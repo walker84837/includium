@@ -1,9 +1,12 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::rc::Rc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::config::{Compiler, IncludeResolver, PreprocessorConfig, Target, WarningHandler};
+use crate::config::{
+    Compiler, IncludeContext, IncludeKind, IncludeResolver, PreprocessorConfig, Target,
+    WarningHandler,
+};
+use crate::date_time::{format_date, format_time};
 use crate::error::PreprocessError;
 use crate::macro_def::Macro;
 use crate::token::{ExprToken, Token, is_identifier_continue, is_identifier_start};
@@ -27,6 +30,7 @@ pub struct Preprocessor {
     pub(crate) current_line: usize,
     pub(crate) current_file: String,
     included_once: HashSet<String>,
+    include_stack: Vec<String>,
     warning_handler: Option<WarningHandler>,
     compiler: Compiler,
 }
@@ -49,6 +53,7 @@ impl Preprocessor {
             current_line: 1,
             current_file: "<stdin>".to_string(),
             included_once: HashSet::new(),
+            include_stack: Vec::new(),
             warning_handler: None,
             compiler: Compiler::GCC,
         }
@@ -127,7 +132,8 @@ impl Preprocessor {
     #[must_use]
     pub fn with_include_resolver<F>(mut self, f: F) -> Self
     where
-        F: Fn(&str) -> Option<String> + 'static,
+        F: Fn(&str, crate::config::IncludeKind, &crate::config::IncludeContext) -> Option<String>
+            + 'static,
     {
         self.include_resolver = Some(Rc::new(f));
         self
@@ -394,15 +400,9 @@ impl Preprocessor {
         }
 
         let body_str: String = chars.collect();
-        let stripped_body = Self::strip_comments(&body_str);
-        let parts: Vec<&str> = stripped_body.split_whitespace().collect();
-        let mut body_tokens = Vec::new();
-        for (i, part) in parts.iter().enumerate() {
-            body_tokens.extend(Self::tokenize_line(part));
-            if i < parts.len() - 1 {
-                body_tokens.push(Token::Other(" ".to_string()));
-            }
-        }
+        let stripped = Self::strip_comments(&body_str);
+        let stripped_body = stripped.trim();
+        let body_tokens = Self::tokenize_line(&stripped_body);
         self.macros.insert(
             name,
             Macro {
@@ -434,13 +434,20 @@ impl Preprocessor {
         }
 
         let trimmed = rest.trim();
-        let path = if (trimmed.starts_with('"') && trimmed.ends_with('"'))
-            || (trimmed.starts_with('<') && trimmed.ends_with('>')) && trimmed.len() >= 2
-        {
-            Some(trimmed[1..(trimmed.len() - 1)].to_string())
-        } else {
-            None
-        };
+        let (path, kind) =
+            if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
+                (
+                    Some(trimmed[1..(trimmed.len() - 1)].to_string()),
+                    IncludeKind::Local,
+                )
+            } else if trimmed.starts_with('<') && trimmed.ends_with('>') && trimmed.len() >= 2 {
+                (
+                    Some(trimmed[1..(trimmed.len() - 1)].to_string()),
+                    IncludeKind::System,
+                )
+            } else {
+                (None, IncludeKind::Local) // dummy
+            };
 
         let Some(p) = path else {
             return Err(PreprocessError::MalformedDirective("include".to_string()));
@@ -450,15 +457,29 @@ impl Preprocessor {
             return Err(PreprocessError::IncludeNotFound(p));
         };
 
-        let Some(content) = resolver(&p) else {
+        let context = IncludeContext {
+            include_stack: self.include_stack.clone(),
+            include_dirs: Vec::new(), // TODO: populate from config or env
+        };
+
+        let Some(content) = resolver(&p, kind, &context) else {
             return Err(PreprocessError::IncludeNotFound(p));
         };
+
+        // Check for cycles
+        if self.include_stack.contains(&p) {
+            return Err(PreprocessError::Other(format!(
+                "Include cycle detected for '{}'",
+                p
+            )));
+        }
 
         // Check for #pragma once
         if content.contains("#pragma once") && self.included_once.contains(&p) {
             return Ok(Some(String::new())); // Skip inclusion
         }
 
+        self.include_stack.push(self.current_file.clone());
         let mut nested = Preprocessor {
             macros: self.macros.clone(),
             include_resolver: self.include_resolver.clone(),
@@ -467,10 +488,12 @@ impl Preprocessor {
             current_line: 1,
             current_file: p.clone(),
             included_once: self.included_once.clone(),
+            include_stack: self.include_stack.clone(),
             warning_handler: self.warning_handler.clone(),
             compiler: self.compiler.clone(),
         };
         let processed = nested.process(&content)?;
+        self.include_stack.pop();
         self.macros = nested.macros;
 
         // Mark as included if it has #pragma once
@@ -1066,7 +1089,7 @@ impl Preprocessor {
         }
     }
 
-    /// Strip comments from a string, replacing with spaces
+    /// Strip comments from a string, replacing with spaces, but not inside strings
     fn strip_comments(input: &str) -> String {
         if !input.contains('/') {
             return input.to_string();
@@ -1074,34 +1097,53 @@ impl Preprocessor {
 
         let mut result = String::with_capacity(input.len());
         let mut chars = input.chars().peekable();
+        let mut in_string = false;
+        let mut quote_char = '\0';
 
         while let Some(ch) = chars.next() {
-            if ch == '/' {
-                if let Some(&'/') = chars.peek() {
-                    // Skip // comment
-                    chars.next(); // consume second /
-                    result.push(' ');
-                    for c in chars.by_ref() {
-                        if c == '\n' {
-                            result.push(c);
-                            break;
+            if !in_string {
+                if ch == '"' || ch == '\'' {
+                    in_string = true;
+                    quote_char = ch;
+                } else if ch == '/' {
+                    if let Some(&'/') = chars.peek() {
+                        // Skip // comment
+                        chars.next(); // consume second /
+                        result.push(' ');
+                        for c in chars.by_ref() {
+                            if c == '\n' {
+                                result.push(c);
+                                break;
+                            }
+                            // Skip comment content
                         }
-                        // Skip comment content
-                    }
-                    continue;
-                } else if let Some(&'*') = chars.peek() {
-                    // Skip /* */ comment
-                    chars.next(); // consume *
-                    result.push(' ');
-                    let mut prev = '\0';
-                    for c in chars.by_ref() {
-                        if prev == '*' && c == '/' {
-                            break;
+                        continue;
+                    } else if let Some(&'*') = chars.peek() {
+                        // Skip /* */ comment
+                        chars.next(); // consume *
+                        result.push(' ');
+                        let mut prev = '\0';
+                        for c in chars.by_ref() {
+                            if prev == '*' && c == '/' {
+                                break;
+                            }
+                            prev = c;
+                            // Skip comment content
                         }
-                        prev = c;
-                        // Skip comment content
+                        continue;
                     }
-                    continue;
+                }
+            } else if ch == quote_char {
+                // Check for escape
+                let mut backslash_count = 0;
+                let mut pos = result.len();
+                while pos > 0 && result.as_bytes()[pos - 1] == b'\\' {
+                    backslash_count += 1;
+                    pos -= 1;
+                }
+                if backslash_count % 2 == 0 {
+                    in_string = false;
+                    quote_char = '\0';
                 }
             }
             result.push(ch);
@@ -1226,35 +1268,8 @@ impl Preprocessor {
         match name {
             "__LINE__" => Some(Token::Other(self.current_line.to_string())),
             "__FILE__" => Some(Token::StringLiteral(format!("\"{}\"", self.current_file))),
-            "__DATE__" => {
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default();
-                let days_since_epoch = now.as_secs() / 86400;
-                let year = 1970 + days_since_epoch / 365;
-                let day = (days_since_epoch % 31) + 1;
-                let month_names = [
-                    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov",
-                    "Dec",
-                ];
-                let month_idx = ((days_since_epoch / 31) % 12) as usize;
-                let month = month_names[month_idx];
-                Some(Token::StringLiteral(format!(
-                    "\"{month:3} {day:2} {year}\""
-                )))
-            }
-            "__TIME__" => {
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default();
-                let secs = now.as_secs() % 86400;
-                let hours = secs / 3600;
-                let mins = (secs % 3600) / 60;
-                let secs = secs % 60;
-                Some(Token::StringLiteral(format!(
-                    "\"{hours:02}:{mins:02}:{secs:02}\""
-                )))
-            }
+            "__DATE__" => Some(Token::StringLiteral(format!("\"{}\"", format_date()))),
+            "__TIME__" => Some(Token::StringLiteral(format!("\"{}\"", format_time()))),
             _ => None,
         }
     }

@@ -36,6 +36,7 @@
 
 mod c_api;
 mod config;
+mod date_time;
 mod error;
 mod macro_def;
 mod preprocessor;
@@ -126,7 +127,7 @@ int z = ADD(1, 2);
 #include "inc.h"
 int x = FOO;
 "#;
-        let mut pp = Preprocessor::new().with_include_resolver(|p| {
+        let mut pp = Preprocessor::new().with_include_resolver(|p, _kind, _context| {
             if p == "inc.h" {
                 Some("#define FOO 42\n".to_string())
             } else {
@@ -216,7 +217,7 @@ int x = 1;
     #[test]
     fn comment_stripping() {
         let src = r#"
-// This is a comment
+ // This is a comment
 int x = 1; /* inline comment */
 #define MACRO // comment after define
 int y = MACRO;
@@ -226,6 +227,18 @@ int y = MACRO;
         // Comments should be replaced with spaces
         assert!(out.contains("int x = 1; "));
         assert!(out.contains("int y = ;"));
+    }
+
+    #[test]
+    fn comment_stripping_in_strings() {
+        let src = r#"
+#define STR "this /* is not a comment */"
+const char* s = STR;
+"#;
+        let mut pp = Preprocessor::new();
+        let out = pp.process(src).unwrap();
+        // Comments inside strings should not be stripped
+        assert!(out.contains("\"this /* is not a comment */\""));
     }
 
     #[test]
@@ -247,7 +260,7 @@ const char* file = FILE;
     #[test]
     fn pragma_once() {
         let mut pp = Preprocessor::new();
-        pp.include_resolver = Some(std::rc::Rc::new(|path: &str| {
+        pp.include_resolver = Some(std::rc::Rc::new(|path: &str, _kind, _context| {
             if path == "header.h" {
                 Some("#pragma once\nint x = 42;".to_string())
             } else {

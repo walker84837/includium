@@ -1,7 +1,34 @@
 use std::rc::Rc;
 
+/// Kind of include directive
+#[derive(Clone, Debug, PartialEq)]
+pub enum IncludeKind {
+    /// Local include with quotes: #include "file.h"
+    Local,
+    /// System include with angles: #include <file.h>
+    System,
+}
+
+/// Context for include resolution
+#[derive(Clone, Debug)]
+pub struct IncludeContext {
+    /// Stack of currently included files for cycle detection and context
+    pub include_stack: Vec<String>,
+    /// List of include directories to search
+    pub include_dirs: Vec<String>,
+}
+
+impl Default for IncludeContext {
+    fn default() -> Self {
+        Self {
+            include_stack: Vec::new(),
+            include_dirs: Vec::new(),
+        }
+    }
+}
+
 /// Type alias for include resolver function
-pub type IncludeResolver = Rc<dyn Fn(&str) -> Option<String>>;
+pub type IncludeResolver = Rc<dyn Fn(&str, IncludeKind, &IncludeContext) -> Option<String>>;
 
 /// Type alias for warning handler function
 pub type WarningHandler = Rc<dyn Fn(&str)>;
