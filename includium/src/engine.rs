@@ -119,7 +119,11 @@ impl PreprocessorEngine {
                     if let Ok(val) = num.parse::<i64>() {
                         tokens.push(ExprToken::Number(val));
                     } else {
-                        return Err(PreprocessError::Other(format!("Invalid number: {num}")));
+                        return Err(PreprocessError::other(
+                            "<expression>".to_string(),
+                            0,
+                            format!("Invalid number: {num}"),
+                        ));
                     }
                 }
                 'a'..='z' | 'A'..='Z' | '_' => {
@@ -150,7 +154,11 @@ impl PreprocessorEngine {
                         chars.next();
                         tokens.push(ExprToken::Equal);
                     } else {
-                        return Err(PreprocessError::Other("Invalid operator: =".to_string()));
+                        return Err(PreprocessError::other(
+                            "<expression>".to_string(),
+                            0,
+                            "Invalid operator: =".to_string(),
+                        ));
                     }
                 }
                 '<' => {
@@ -174,7 +182,11 @@ impl PreprocessorEngine {
                         chars.next();
                         tokens.push(ExprToken::And);
                     } else {
-                        return Err(PreprocessError::Other("Invalid operator: &".to_string()));
+                        return Err(PreprocessError::other(
+                            "<expression>".to_string(),
+                            0,
+                            "Invalid operator: &".to_string(),
+                        ));
                     }
                 }
                 '|' => {
@@ -182,7 +194,11 @@ impl PreprocessorEngine {
                         chars.next();
                         tokens.push(ExprToken::Or);
                     } else {
-                        return Err(PreprocessError::Other("Invalid operator: |".to_string()));
+                        return Err(PreprocessError::other(
+                            "<expression>".to_string(),
+                            0,
+                            "Invalid operator: |".to_string(),
+                        ));
                     }
                 }
                 '+' => tokens.push(ExprToken::Plus),
@@ -191,7 +207,13 @@ impl PreprocessorEngine {
                 '/' => tokens.push(ExprToken::Divide),
                 '%' => tokens.push(ExprToken::Modulo),
                 c if c.is_whitespace() => {}
-                _ => return Err(PreprocessError::Other(format!("Invalid character: {ch}"))),
+                _ => {
+                    return Err(PreprocessError::other(
+                        "<expression>".to_string(),
+                        0,
+                        format!("Invalid character: {ch}"),
+                    ));
+                }
             }
         }
 

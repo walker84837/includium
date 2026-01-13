@@ -47,7 +47,7 @@ mod token;
 pub use config::{Compiler, IncludeResolver, PreprocessorConfig, Target};
 pub use context::PreprocessorContext;
 pub use driver::PreprocessorDriver;
-pub use error::PreprocessError;
+pub use error::{PreprocessError, PreprocessErrorKind};
 
 // Token, ExprToken, Macro are internal or accessible via PreprocessorDriver methods if needed,
 // but Macro struct is public so it can be returned by get_macros.
@@ -423,5 +423,26 @@ int var PASTE3(_,x,_) = 42;
         let mut pp = Preprocessor::new();
         let out = pp.process(src).unwrap();
         assert!(out.contains("_x_"));
+    }
+
+    #[test]
+    fn error_location_information() {
+        use std::error::Error;
+
+        // Test that errors include proper location information
+        let error =
+            PreprocessError::malformed_directive("test.c".to_string(), 42, "define".to_string());
+
+        // Check that the error displays with location
+        let display = format!("{}", error);
+        assert!(display.contains("test.c:42"));
+        assert!(display.contains("malformed directive: define"));
+
+        // Check error chaining for I/O errors
+        let io_error = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        let wrapped_error = PreprocessError::io_error("test.c".to_string(), 10, io_error);
+
+        // The source should be the underlying I/O error
+        assert!(wrapped_error.source().is_some());
     }
 }

@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::time::SystemTime;
 
 use crate::config::{Compiler, IncludeResolver, Target, WarningHandler};
 use crate::macro_def::Macro;
+use crate::token::Token;
 
 /// State for conditional compilation directives
 #[derive(Clone, Debug)]
@@ -10,6 +12,14 @@ pub enum ConditionalState {
     If(bool),
     Elif(bool),
     Else(bool),
+}
+
+/// Cached include result to avoid redundant processing
+#[derive(Clone, Debug)]
+pub struct CachedInclude {
+    tokens: Vec<Token>,
+    config_hash: u64,
+    timestamp: SystemTime,
 }
 
 /// Context containing all state for preprocessor operations
@@ -41,6 +51,9 @@ pub struct PreprocessorContext {
     /// Current line number for __LINE__ macro
     pub current_line: usize,
 
+    /// Current column position (byte offset) for error reporting
+    pub current_column: usize,
+
     /// Maximum recursion depth for macro expansion
     pub recursion_limit: usize,
 
@@ -49,6 +62,9 @@ pub struct PreprocessorContext {
 
     /// Optional warning handler for #warning directives
     pub warning_handler: Option<WarningHandler>,
+
+    /// Cache for processed include files
+    pub include_cache: HashMap<String, CachedInclude>,
 }
 
 impl Default for PreprocessorContext {
@@ -70,9 +86,11 @@ impl PreprocessorContext {
             conditional_stack: Vec::new(),
             current_file: "<stdin>".to_string(),
             current_line: 1,
+            current_column: 1,
             recursion_limit: 128,
             compiler: Compiler::GCC,
             warning_handler: None,
+            include_cache: HashMap::new(),
         }
     }
 
