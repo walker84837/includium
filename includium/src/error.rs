@@ -30,6 +30,8 @@ pub struct PreprocessError {
     pub line: usize,
     /// Optional column number for more precise location
     pub column: Option<usize>,
+    /// Optional source line content for context display
+    pub source_line: Option<String>,
 }
 
 impl PreprocessError {
@@ -41,6 +43,7 @@ impl PreprocessError {
             file,
             line,
             column: None,
+            source_line: None,
         }
     }
 
@@ -52,6 +55,7 @@ impl PreprocessError {
             file,
             line,
             column: None,
+            source_line: None,
         }
     }
 
@@ -63,6 +67,7 @@ impl PreprocessError {
             file,
             line,
             column: None,
+            source_line: None,
         }
     }
 
@@ -74,6 +79,7 @@ impl PreprocessError {
             file,
             line,
             column: None,
+            source_line: None,
         }
     }
 
@@ -85,6 +91,7 @@ impl PreprocessError {
             file,
             line,
             column: None,
+            source_line: None,
         }
     }
 
@@ -96,6 +103,7 @@ impl PreprocessError {
             file,
             line,
             column: None,
+            source_line: None,
         }
     }
 
@@ -107,6 +115,7 @@ impl PreprocessError {
             file,
             line,
             column: None,
+            source_line: None,
         }
     }
 
@@ -114,6 +123,13 @@ impl PreprocessError {
     #[must_use]
     pub fn with_column(mut self, column: usize) -> Self {
         self.column = Some(column);
+        self
+    }
+
+    /// Set source line for context display
+    #[must_use]
+    pub fn with_source_line(mut self, source_line: String) -> Self {
+        self.source_line = Some(source_line);
         self
     }
 }
@@ -126,29 +142,40 @@ impl fmt::Display for PreprocessError {
             format!("{}:{}", self.file, self.line)
         };
 
-        match &self.kind {
+        let message = match &self.kind {
             PreprocessErrorKind::IncludeNotFound(path) => {
-                write!(f, "{}: include not found: {}", loc, path)
+                format!("include not found: {}", path)
             }
             PreprocessErrorKind::MalformedDirective(directive) => {
-                write!(f, "{}: malformed directive: {}", loc, directive)
+                format!("malformed directive: {}", directive)
             }
             PreprocessErrorKind::MacroArgMismatch(details) => {
-                write!(f, "{}: macro argument mismatch: {}", loc, details)
+                format!("macro argument mismatch: {}", details)
             }
             PreprocessErrorKind::RecursionLimitExceeded(details) => {
-                write!(f, "{}: recursion limit exceeded: {}", loc, details)
+                format!("recursion limit exceeded: {}", details)
             }
             PreprocessErrorKind::ConditionalError(details) => {
-                write!(f, "{}: conditional error: {}", loc, details)
+                format!("conditional error: {}", details)
             }
             PreprocessErrorKind::Io(err) => {
-                write!(f, "{}: I/O error: {}", loc, err)
+                format!("I/O error: {}", err)
             }
-            PreprocessErrorKind::Other(message) => {
-                write!(f, "{}: error: {}", loc, message)
+            PreprocessErrorKind::Other(message) => message.clone(),
+        };
+
+        write!(f, "{}: {}", loc, message)?;
+
+        if let (Some(col), Some(source_line)) = (self.column, &self.source_line) {
+            write!(f, "\n{}\n", source_line)?;
+            let indent = " ".repeat(col.saturating_sub(1));
+            write!(f, "{}^", indent)?;
+            if col > 1 {
+                write!(f, "{}", "^".repeat(col.saturating_sub(1)))?;
             }
         }
+
+        Ok(())
     }
 }
 

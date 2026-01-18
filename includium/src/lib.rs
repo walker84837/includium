@@ -445,4 +445,110 @@ int var PASTE3(_,x,_) = 42;
         // The source should be the underlying I/O error
         assert!(wrapped_error.source().is_some());
     }
+
+    #[test]
+    fn error_with_source_line_and_caret() {
+        // Test that errors include source line and caret indicator
+        let error =
+            PreprocessError::malformed_directive("test.c".to_string(), 10, "define".to_string())
+                .with_column(5)
+                .with_source_line("#define".to_string());
+
+        let display = format!("{}", error);
+        assert!(display.contains("test.c:10:5"));
+        assert!(display.contains("#define"));
+        // Check for caret indicator (column 5 means 4 spaces before ^)
+        assert!(display.contains("    ^"));
+    }
+
+    #[test]
+    fn malformed_directive_error() {
+        // Test malformed directive error with source context
+        let src = r#"
+#define
+int x = 1;
+"#;
+        let mut pp = Preprocessor::new();
+        let result = pp.process(src);
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        let display = format!("{}", error);
+
+        // Should contain location
+        assert!(display.contains(":2:"));
+        // Should contain source line
+        assert!(display.contains("#define"));
+        // Should contain caret
+        assert!(display.contains("^"));
+    }
+
+    #[test]
+    fn unterminated_if_error() {
+        // Test unterminated conditional error
+        let src = r#"
+#if defined(FOO)
+int x = 1;
+"#;
+        let mut pp = Preprocessor::new();
+        let result = pp.process(src);
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        let display = format!("{}", error);
+
+        // Should contain location info
+        assert!(display.contains("unterminated"));
+    }
+
+    #[test]
+    fn elif_without_if_error() {
+        // Test #elif without #if error
+        let src = r#"
+#elif defined(FOO)
+int x = 1;
+"#;
+        let mut pp = Preprocessor::new();
+        let result = pp.process(src);
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        let display = format!("{}", error);
+
+        assert!(display.contains("#elif without #if"));
+    }
+
+    #[test]
+    fn else_without_if_error() {
+        // Test #else without #if error
+        let src = r#"
+#else
+int x = 1;
+"#;
+        let mut pp = Preprocessor::new();
+        let result = pp.process(src);
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        let display = format!("{}", error);
+
+        assert!(display.contains("#else without #if"));
+    }
+
+    #[test]
+    fn endif_without_if_error() {
+        // Test #endif without #if error
+        let src = r#"
+#endif
+int x = 1;
+"#;
+        let mut pp = Preprocessor::new();
+        let result = pp.process(src);
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        let display = format!("{}", error);
+
+        assert!(display.contains("#endif without #if"));
+    }
 }

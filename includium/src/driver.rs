@@ -94,43 +94,62 @@ impl PreprocessorDriver {
     }
 
     /// Create a directive error with current location information
-    fn directive_error(&self, directive: &str) -> PreprocessError {
+    fn directive_error(&self, directive: &str, line: &str) -> PreprocessError {
+        let column = Self::calculate_column(line, directive);
         PreprocessError::malformed_directive(
             self.context.current_file.clone(),
             self.context.current_line,
             directive.to_string(),
         )
-        .with_column(self.context.current_column)
+        .with_column(column)
+        .with_source_line(line.to_string())
     }
 
     /// Create a conditional error with current location information
-    fn conditional_error(&self, details: &str) -> PreprocessError {
+    fn conditional_error(&self, details: &str, line: &str) -> PreprocessError {
+        let column = Self::calculate_column(line, details);
         PreprocessError::conditional_error(
             self.context.current_file.clone(),
             self.context.current_line,
             details.to_owned(),
         )
-        .with_column(self.context.current_column)
+        .with_column(column)
+        .with_source_line(line.to_string())
     }
 
     /// Create an include error with current location information
-    fn include_error(&self, path: &str) -> PreprocessError {
+    fn include_error(&self, path: &str, line: &str) -> PreprocessError {
+        let column = Self::calculate_column(line, path);
         PreprocessError::include_not_found(
             self.context.current_file.clone(),
             self.context.current_line,
             path.to_string(),
         )
-        .with_column(self.context.current_column)
+        .with_column(column)
+        .with_source_line(line.to_string())
     }
 
     /// Create a generic error with current location information
-    fn generic_error(&self, message: &str) -> PreprocessError {
+    fn generic_error(&self, message: &str, line: &str) -> PreprocessError {
+        let column = Self::calculate_column(line, message);
         PreprocessError::other(
             self.context.current_file.clone(),
             self.context.current_line,
             message.to_string(),
         )
-        .with_column(self.context.current_column)
+        .with_column(column)
+        .with_source_line(line.to_string())
+    }
+
+    /// Calculate the column position of a substring in a line
+    fn calculate_column(line: &str, substr: &str) -> usize {
+        if substr.is_empty() {
+            return 1;
+        }
+        if let Some(pos) = line.find(substr) {
+            return pos + 1;
+        }
+        line.len() + 1
     }
 
     /// Process the input C code and return the preprocessed result
@@ -146,15 +165,15 @@ impl PreprocessorDriver {
         self.context.current_line = 1;
         self.context.current_column = 1;
 
-        for line in pragma_processed.lines() {
+        for current_line_str in pragma_processed.lines() {
             self.context.current_column = 1;
-            if let Some(directive) = Self::extract_directive(line) {
-                if let Some(content) = self.handle_directive(directive, line)? {
+            if let Some(directive) = Self::extract_directive(current_line_str) {
+                if let Some(content) = self.handle_directive(directive, current_line_str)? {
                     out_lines.push(content);
                 }
             } else if self.can_emit_line() {
-                let tokens = PreprocessorEngine::tokenize_line(line);
-                let expanded_tokens = self.expand_tokens(&tokens, 0)?;
+                let tokens = PreprocessorEngine::tokenize_line(current_line_str);
+                let expanded_tokens = self.expand_tokens(&tokens, 0, current_line_str)?;
                 let reconstructed = PreprocessorEngine::tokens_to_string(&expanded_tokens);
                 out_lines.push(reconstructed);
             }
@@ -162,7 +181,7 @@ impl PreprocessorDriver {
         }
 
         if !self.context.conditional_stack.is_empty() {
-            return Err(self.conditional_error("unterminated #if/#ifdef/#ifndef"));
+            return Err(self.conditional_error("unterminated #if/#ifdef/#ifndef", "<end of input>"));
         }
 
         Ok(out_lines.join("\n"))
@@ -199,9 +218,9 @@ impl PreprocessorDriver {
         let rest = parts.next().unwrap_or("").trim();
 
         match cmd {
-            "define" => self.handle_define(rest),
-            "undef" => self.handle_undef(rest),
-            "include" => self.handle_include(rest),
+            "define" => self.handle_define(rest, full_line),
+            "undef" => self.handle_undef(rest, full_line),
+            "include" => self.handle_include(rest, full_line),
             "ifdef" => {
                 self.handle_ifdef(rest);
                 Ok(None)
@@ -210,16 +229,16 @@ impl PreprocessorDriver {
                 self.handle_ifndef(rest);
                 Ok(None)
             }
-            "if" => self.handle_if(rest),
+            "if" => self.handle_if(rest, full_line),
             "elif" => self.handle_elif(rest, full_line),
-            "else" => self.handle_else(),
-            "endif" => self.handle_endif(),
-            "error" => self.handle_error(rest),
+            "else" => self.handle_else(full_line),
+            "endif" => self.handle_endif(full_line),
+            "error" => self.handle_error(rest, full_line),
             "warning" => {
                 self.handle_warning(rest);
                 Ok(None)
             }
-            "line" => self.handle_line(rest),
+            "line" => self.handle_line(rest, full_line),
             "pragma" => {
                 self.handle_pragma(rest);
                 Ok(None)
@@ -228,14 +247,18 @@ impl PreprocessorDriver {
         }
     }
 
-    fn handle_define(&mut self, rest: &str) -> Result<Option<String>, PreprocessError> {
+    fn handle_define(
+        &mut self,
+        rest: &str,
+        full_line: &str,
+    ) -> Result<Option<String>, PreprocessError> {
         if !self.can_emit_line() {
             return Ok(None);
         }
 
         let rest = rest.trim_start();
         if rest.is_empty() {
-            return Err(self.directive_error("define"));
+            return Err(self.directive_error("define", full_line));
         }
 
         let mut chars = rest.chars().peekable();
@@ -250,7 +273,7 @@ impl PreprocessorDriver {
         }
 
         if name.is_empty() {
-            return Err(self.directive_error("define"));
+            return Err(self.directive_error("define", full_line));
         }
 
         while let Some(&c) = chars.peek() {
@@ -271,7 +294,7 @@ impl PreprocessorDriver {
 
             loop {
                 match chars.peek() {
-                    None => return Err(self.directive_error("define")),
+                    None => return Err(self.directive_error("define", full_line)),
                     Some(&')') => {
                         if !param.trim().is_empty() {
                             params_vec.push(param.trim().to_string());
@@ -324,21 +347,29 @@ impl PreprocessorDriver {
         Ok(None)
     }
 
-    fn handle_undef(&mut self, rest: &str) -> Result<Option<String>, PreprocessError> {
+    fn handle_undef(
+        &mut self,
+        rest: &str,
+        full_line: &str,
+    ) -> Result<Option<String>, PreprocessError> {
         if !self.can_emit_line() {
             return Ok(None);
         }
 
         let name = rest.split_whitespace().next().unwrap_or("");
         if name.is_empty() {
-            Err(self.directive_error("undef"))
+            Err(self.directive_error("undef", full_line))
         } else {
             self.context.undef(name);
             Ok(None)
         }
     }
 
-    fn handle_include(&mut self, rest: &str) -> Result<Option<String>, PreprocessError> {
+    fn handle_include(
+        &mut self,
+        rest: &str,
+        full_line: &str,
+    ) -> Result<Option<String>, PreprocessError> {
         if !self.can_emit_line() {
             return Ok(None);
         }
@@ -360,11 +391,11 @@ impl PreprocessorDriver {
             };
 
         let Some(p) = path else {
-            return Err(self.directive_error("include"));
+            return Err(self.directive_error("include", full_line));
         };
 
         let Some(resolver) = &self.context.include_resolver else {
-            return Err(self.include_error(&p));
+            return Err(self.include_error(&p, full_line));
         };
 
         let context = IncludeContext {
@@ -373,12 +404,14 @@ impl PreprocessorDriver {
         };
 
         let Some(content) = resolver(&p, kind, &context) else {
-            return Err(self.include_error(&p));
+            return Err(self.include_error(&p, full_line));
         };
 
         // Check for cycles
         if self.context.include_stack.contains(&p) {
-            return Err(self.generic_error(&format!("Include cycle detected for '{}'", p)));
+            return Err(
+                self.generic_error(&format!("Include cycle detected for '{}'", p), full_line)
+            );
         }
 
         // Check for #pragma once
@@ -403,7 +436,6 @@ impl PreprocessorDriver {
                 current_file: p.clone(),
                 compiler: self.context.compiler.clone(),
                 warning_handler: self.context.warning_handler.clone(),
-                include_cache: self.context.include_cache.clone(),
             },
         };
         let processed = nested.process(&content)?;
@@ -433,8 +465,12 @@ impl PreprocessorDriver {
             .push(ConditionalState::If(!defined));
     }
 
-    fn handle_if(&mut self, rest: &str) -> Result<Option<String>, PreprocessError> {
-        let evaluated = self.evaluate_expression(rest)?;
+    fn handle_if(
+        &mut self,
+        rest: &str,
+        full_line: &str,
+    ) -> Result<Option<String>, PreprocessError> {
+        let evaluated = self.evaluate_expression(rest, full_line)?;
         self.context
             .conditional_stack
             .push(ConditionalState::If(evaluated));
@@ -444,13 +480,13 @@ impl PreprocessorDriver {
     fn handle_elif(
         &mut self,
         rest: &str,
-        _full_line: &str,
+        full_line: &str,
     ) -> Result<Option<String>, PreprocessError> {
         if self.context.conditional_stack.is_empty() {
-            return Err(self.conditional_error("#elif without #if"));
+            return Err(self.conditional_error("#elif without #if", full_line));
         }
 
-        let evaluated = self.evaluate_expression(rest)?;
+        let evaluated = self.evaluate_expression(rest, full_line)?;
 
         if let Some(last) = self.context.conditional_stack.last_mut() {
             *last = ConditionalState::Elif(evaluated);
@@ -458,14 +494,14 @@ impl PreprocessorDriver {
         Ok(None)
     }
 
-    fn handle_else(&mut self) -> Result<Option<String>, PreprocessError> {
+    fn handle_else(&mut self, full_line: &str) -> Result<Option<String>, PreprocessError> {
         let is_active = if let Some(last) = self.context.conditional_stack.last() {
             matches!(
                 last,
                 ConditionalState::If(false) | ConditionalState::Elif(false)
             )
         } else {
-            return Err(self.conditional_error("#else without #if"));
+            return Err(self.conditional_error("#else without #if", full_line));
         };
 
         if let Some(last) = self.context.conditional_stack.last_mut() {
@@ -474,21 +510,25 @@ impl PreprocessorDriver {
         Ok(None)
     }
 
-    fn handle_endif(&mut self) -> Result<Option<String>, PreprocessError> {
+    fn handle_endif(&mut self, full_line: &str) -> Result<Option<String>, PreprocessError> {
         if self.context.conditional_stack.pop().is_none() {
-            return Err(self.conditional_error("#endif without #if"));
+            return Err(self.conditional_error("#endif without #if", full_line));
         }
         Ok(None)
     }
 
-    fn handle_error(&mut self, rest: &str) -> Result<Option<String>, PreprocessError> {
+    fn handle_error(
+        &mut self,
+        rest: &str,
+        full_line: &str,
+    ) -> Result<Option<String>, PreprocessError> {
         if self.can_emit_line() {
             let msg = if rest.is_empty() {
                 "#error directive".to_string()
             } else {
                 format!("#error: {rest}")
             };
-            Err(self.generic_error(&msg))
+            Err(self.generic_error(&msg, full_line))
         } else {
             Ok(None)
         }
@@ -512,14 +552,18 @@ impl PreprocessorDriver {
         }
     }
 
-    fn handle_line(&mut self, rest: &str) -> Result<Option<String>, PreprocessError> {
+    fn handle_line(
+        &mut self,
+        rest: &str,
+        full_line: &str,
+    ) -> Result<Option<String>, PreprocessError> {
         if !self.can_emit_line() {
             return Ok(None);
         }
 
         let parts: Vec<&str> = rest.split_whitespace().collect();
         if parts.is_empty() {
-            return Err(self.directive_error("line"));
+            return Err(self.directive_error("line", full_line));
         }
 
         if let Ok(line_num) = parts[0].parse::<usize>() {
@@ -538,18 +582,13 @@ impl PreprocessorDriver {
         Ok(None)
     }
 
-    fn handle_pragma(&mut self, rest: &str) {
-        let trimmed = rest.trim();
-        if trimmed == "once" {
-            self.context
-                .included_once
-                .insert(self.context.current_file.clone());
-        }
-    }
-
-    fn evaluate_expression(&mut self, expr: &str) -> Result<bool, PreprocessError> {
+    fn evaluate_expression(
+        &mut self,
+        expr: &str,
+        full_line: &str,
+    ) -> Result<bool, PreprocessError> {
         let tokens = PreprocessorEngine::tokenize_line(expr);
-        let expanded = self.expand_tokens(&tokens, 0)?;
+        let expanded = self.expand_tokens(&tokens, 0, full_line)?;
         let expr_str = PreprocessorEngine::tokens_to_string(&expanded);
         let trimmed = expr_str.trim();
 
@@ -563,35 +602,57 @@ impl PreprocessorDriver {
             return Ok(self.is_defined(identifier));
         }
 
-        self.parse_expression(trimmed)
+        self.parse_expression(trimmed, full_line)
+    }
+
+    fn handle_pragma(&mut self, rest: &str) {
+        let trimmed = rest.trim();
+        if trimmed == "once" {
+            self.context
+                .included_once
+                .insert(self.context.current_file.clone());
+        }
     }
 
     /// Parse a preprocessor expression with full operator support
     ///
     /// # Errors
     /// Returns `PreprocessError` if the expression is malformed or has invalid operators.
-    pub fn parse_expression(&mut self, expr: &str) -> Result<bool, PreprocessError> {
+    pub fn parse_expression(
+        &mut self,
+        expr: &str,
+        full_line: &str,
+    ) -> Result<bool, PreprocessError> {
         let tokens = PreprocessorEngine::tokenize_expression(expr)?;
-        let result = self.evaluate_expression_tokens(&tokens)?;
+        let result = self.evaluate_expression_tokens(&tokens, full_line)?;
         Ok(result != 0)
     }
 
-    fn evaluate_expression_tokens(&self, tokens: &[ExprToken]) -> Result<i64, PreprocessError> {
+    fn evaluate_expression_tokens(
+        &self,
+        tokens: &[ExprToken],
+        full_line: &str,
+    ) -> Result<i64, PreprocessError> {
         let mut pos = 0;
-        let result = self.parse_or(tokens, &mut pos)?;
+        let result = self.parse_or(tokens, &mut pos, full_line)?;
         if pos != tokens.len() {
-            return Err(self.generic_error("Unexpected tokens at end of expression"));
+            return Err(self.generic_error("Unexpected tokens at end of expression", full_line));
         }
         Ok(result)
     }
 
-    fn parse_or(&self, tokens: &[ExprToken], pos: &mut usize) -> Result<i64, PreprocessError> {
-        let mut left = self.parse_and(tokens, pos)?;
+    fn parse_or(
+        &self,
+        tokens: &[ExprToken],
+        pos: &mut usize,
+        full_line: &str,
+    ) -> Result<i64, PreprocessError> {
+        let mut left = self.parse_and(tokens, pos, full_line)?;
         while *pos < tokens.len() {
             match tokens[*pos] {
                 ExprToken::Or => {
                     *pos += 1;
-                    let right = self.parse_and(tokens, pos)?;
+                    let right = self.parse_and(tokens, pos, full_line)?;
                     left = i64::from(left != 0 || right != 0);
                 }
                 _ => break,
@@ -600,13 +661,18 @@ impl PreprocessorDriver {
         Ok(left)
     }
 
-    fn parse_and(&self, tokens: &[ExprToken], pos: &mut usize) -> Result<i64, PreprocessError> {
-        let mut left = self.parse_comparison(tokens, pos)?;
+    fn parse_and(
+        &self,
+        tokens: &[ExprToken],
+        pos: &mut usize,
+        full_line: &str,
+    ) -> Result<i64, PreprocessError> {
+        let mut left = self.parse_comparison(tokens, pos, full_line)?;
         while *pos < tokens.len() {
             match tokens[*pos] {
                 ExprToken::And => {
                     *pos += 1;
-                    let right = self.parse_comparison(tokens, pos)?;
+                    let right = self.parse_comparison(tokens, pos, full_line)?;
                     left = i64::from(left != 0 && right != 0);
                 }
                 _ => break,
@@ -619,38 +685,39 @@ impl PreprocessorDriver {
         &self,
         tokens: &[ExprToken],
         pos: &mut usize,
+        full_line: &str,
     ) -> Result<i64, PreprocessError> {
-        let left = self.parse_additive(tokens, pos)?;
+        let left = self.parse_additive(tokens, pos, full_line)?;
         if *pos < tokens.len() {
             match tokens[*pos] {
                 ExprToken::Equal => {
                     *pos += 1;
-                    let right = self.parse_additive(tokens, pos)?;
+                    let right = self.parse_additive(tokens, pos, full_line)?;
                     return Ok(i64::from(left == right));
                 }
                 ExprToken::NotEqual => {
                     *pos += 1;
-                    let right = self.parse_additive(tokens, pos)?;
+                    let right = self.parse_additive(tokens, pos, full_line)?;
                     return Ok(i64::from(left != right));
                 }
                 ExprToken::Less => {
                     *pos += 1;
-                    let right = self.parse_additive(tokens, pos)?;
+                    let right = self.parse_additive(tokens, pos, full_line)?;
                     return Ok(i64::from(left < right));
                 }
                 ExprToken::LessEqual => {
                     *pos += 1;
-                    let right = self.parse_additive(tokens, pos)?;
+                    let right = self.parse_additive(tokens, pos, full_line)?;
                     return Ok(i64::from(left <= right));
                 }
                 ExprToken::Greater => {
                     *pos += 1;
-                    let right = self.parse_additive(tokens, pos)?;
+                    let right = self.parse_additive(tokens, pos, full_line)?;
                     return Ok(i64::from(left > right));
                 }
                 ExprToken::GreaterEqual => {
                     *pos += 1;
-                    let right = self.parse_additive(tokens, pos)?;
+                    let right = self.parse_additive(tokens, pos, full_line)?;
                     return Ok(i64::from(left >= right));
                 }
                 _ => {}
@@ -663,18 +730,19 @@ impl PreprocessorDriver {
         &self,
         tokens: &[ExprToken],
         pos: &mut usize,
+        full_line: &str,
     ) -> Result<i64, PreprocessError> {
-        let mut left = self.parse_multiplicative(tokens, pos)?;
+        let mut left = self.parse_multiplicative(tokens, pos, full_line)?;
         while *pos < tokens.len() {
             match tokens[*pos] {
                 ExprToken::Plus => {
                     *pos += 1;
-                    let right = self.parse_multiplicative(tokens, pos)?;
+                    let right = self.parse_multiplicative(tokens, pos, full_line)?;
                     left += right;
                 }
                 ExprToken::Minus => {
                     *pos += 1;
-                    let right = self.parse_multiplicative(tokens, pos)?;
+                    let right = self.parse_multiplicative(tokens, pos, full_line)?;
                     left -= right;
                 }
                 _ => break,
@@ -687,28 +755,29 @@ impl PreprocessorDriver {
         &self,
         tokens: &[ExprToken],
         pos: &mut usize,
+        full_line: &str,
     ) -> Result<i64, PreprocessError> {
-        let mut left = self.parse_unary(tokens, pos)?;
+        let mut left = self.parse_unary(tokens, pos, full_line)?;
         while *pos < tokens.len() {
             match tokens[*pos] {
                 ExprToken::Multiply => {
                     *pos += 1;
-                    let right = self.parse_unary(tokens, pos)?;
+                    let right = self.parse_unary(tokens, pos, full_line)?;
                     left *= right;
                 }
                 ExprToken::Divide => {
                     *pos += 1;
-                    let right = self.parse_unary(tokens, pos)?;
+                    let right = self.parse_unary(tokens, pos, full_line)?;
                     if right == 0 {
-                        return Err(self.generic_error("Division by zero"));
+                        return Err(self.generic_error("Division by zero", full_line));
                     }
                     left /= right;
                 }
                 ExprToken::Modulo => {
                     *pos += 1;
-                    let right = self.parse_unary(tokens, pos)?;
+                    let right = self.parse_unary(tokens, pos, full_line)?;
                     if right == 0 {
-                        return Err(self.generic_error("Modulo by zero"));
+                        return Err(self.generic_error("Modulo by zero", full_line));
                     }
                     left %= right;
                 }
@@ -718,28 +787,38 @@ impl PreprocessorDriver {
         Ok(left)
     }
 
-    fn parse_unary(&self, tokens: &[ExprToken], pos: &mut usize) -> Result<i64, PreprocessError> {
+    fn parse_unary(
+        &self,
+        tokens: &[ExprToken],
+        pos: &mut usize,
+        full_line: &str,
+    ) -> Result<i64, PreprocessError> {
         if *pos < tokens.len() {
             match tokens[*pos] {
                 ExprToken::Not => {
                     *pos += 1;
-                    let expr = self.parse_unary(tokens, pos)?;
+                    let expr = self.parse_unary(tokens, pos, full_line)?;
                     return Ok(i64::from(expr == 0));
                 }
                 ExprToken::Minus => {
                     *pos += 1;
-                    let expr = self.parse_unary(tokens, pos)?;
+                    let expr = self.parse_unary(tokens, pos, full_line)?;
                     return Ok(-expr);
                 }
                 _ => {}
             }
         }
-        self.parse_primary(tokens, pos)
+        self.parse_primary(tokens, pos, full_line)
     }
 
-    fn parse_primary(&self, tokens: &[ExprToken], pos: &mut usize) -> Result<i64, PreprocessError> {
+    fn parse_primary(
+        &self,
+        tokens: &[ExprToken],
+        pos: &mut usize,
+        full_line: &str,
+    ) -> Result<i64, PreprocessError> {
         if *pos >= tokens.len() {
-            return Err(self.generic_error("Unexpected end of expression"));
+            return Err(self.generic_error("Unexpected end of expression", full_line));
         }
 
         match &tokens[*pos] {
@@ -754,14 +833,17 @@ impl PreprocessorDriver {
                         *pos += 1;
                         if *pos >= tokens.len() || !matches!(tokens[*pos], ExprToken::Identifier(_))
                         {
-                            return Err(self.generic_error("Expected identifier after defined("));
+                            return Err(
+                                self.generic_error("Expected identifier after defined(", full_line)
+                            );
                         }
                         if let ExprToken::Identifier(id) = &tokens[*pos] {
                             *pos += 1;
                             if *pos >= tokens.len() || !matches!(tokens[*pos], ExprToken::RParen) {
-                                return Err(
-                                    self.generic_error("Expected ) after defined(identifier")
-                                );
+                                return Err(self.generic_error(
+                                    "Expected ) after defined(identifier",
+                                    full_line,
+                                ));
                             }
                             *pos += 1;
                             Ok(i64::from(self.is_defined(id)))
@@ -771,6 +853,7 @@ impl PreprocessorDriver {
                     } else {
                         Err(self.generic_error(
                             "defined must be followed by identifier or (identifier)",
+                            full_line,
                         ))
                     }
                 } else {
@@ -779,14 +862,14 @@ impl PreprocessorDriver {
             }
             ExprToken::LParen => {
                 *pos += 1;
-                let expr = self.parse_or(tokens, pos)?;
+                let expr = self.parse_or(tokens, pos, full_line)?;
                 if *pos >= tokens.len() || !matches!(tokens[*pos], ExprToken::RParen) {
-                    return Err(self.generic_error("Expected )"));
+                    return Err(self.generic_error("Expected )", full_line));
                 }
                 *pos += 1;
                 Ok(expr)
             }
-            _ => Err(self.generic_error("Expected number, identifier, or (")),
+            _ => Err(self.generic_error("Expected number, identifier, or (", full_line)),
         }
     }
 
@@ -805,13 +888,15 @@ impl PreprocessorDriver {
         &mut self,
         tokens: &[Token],
         depth: usize,
+        full_line: &str,
     ) -> Result<Vec<Token>, PreprocessError> {
         if depth > self.context.recursion_limit {
             return Err(PreprocessError::recursion_limit_exceeded(
                 self.context.current_file.clone(),
                 self.context.current_line,
                 "too deep".to_string(),
-            ));
+            )
+            .with_source_line(full_line.to_string()));
         }
 
         let mut out: Vec<Token> = Vec::with_capacity(tokens.len());
@@ -828,7 +913,9 @@ impl PreprocessorDriver {
                         && !self.context.disabled_macros.contains(name)
                     {
                         let mac = self.context.macros[name].clone();
-                        i = self.handle_macro_invocation(&mac, name, tokens, i, depth, &mut out)?;
+                        i = self.handle_macro_invocation(
+                            &mac, name, tokens, i, depth, &mut out, full_line,
+                        )?;
                     } else {
                         out.push(tokens[i].clone());
                         i += 1;
@@ -851,22 +938,23 @@ impl PreprocessorDriver {
         i: usize,
         depth: usize,
         out: &mut Vec<Token>,
+        full_line: &str,
     ) -> Result<usize, PreprocessError> {
         if mac.params.is_some() {
             let next_non_whitespace = self.find_next_non_whitespace(tokens, i + 1);
             let is_function_like_invocation = next_non_whitespace < tokens.len()
                 && matches!(&tokens[next_non_whitespace], Token::Other(s) if s.trim_start().starts_with('(') || s == "(");
             if is_function_like_invocation {
-                self.handle_function_like_macro(mac, name, tokens, i, depth, out)
+                self.handle_function_like_macro(mac, name, tokens, i, depth, out, full_line)
             } else {
                 self.context.disabled_macros.insert(name.to_string());
-                self.handle_object_like_macro(mac, depth, out)?;
+                self.handle_object_like_macro(mac, depth, out, full_line)?;
                 self.context.disabled_macros.remove(name);
                 Ok(i + 1)
             }
         } else {
             self.context.disabled_macros.insert(name.to_string());
-            self.handle_object_like_macro(mac, depth, out)?;
+            self.handle_object_like_macro(mac, depth, out, full_line)?;
             self.context.disabled_macros.remove(name);
             Ok(i + 1)
         }
@@ -877,9 +965,10 @@ impl PreprocessorDriver {
         mac: &Macro,
         depth: usize,
         out: &mut Vec<Token>,
+        full_line: &str,
     ) -> Result<(), PreprocessError> {
         let pasted = PreprocessorEngine::apply_token_pasting(&mac.body);
-        let expanded = self.expand_tokens(&pasted, depth + 1)?;
+        let expanded = self.expand_tokens(&pasted, depth + 1, full_line)?;
         out.extend(expanded);
         Ok(())
     }
@@ -892,6 +981,7 @@ impl PreprocessorDriver {
         i: usize,
         depth: usize,
         out: &mut Vec<Token>,
+        full_line: &str,
     ) -> Result<usize, PreprocessError> {
         let paren_token_index = tokens.iter().enumerate().skip(i).find_map(|(k, token)| {
             if let Token::Other(s) = token {
@@ -910,13 +1000,13 @@ impl PreprocessorDriver {
             None => return Ok(i + 1),
         };
 
-        let (args, end_idx) = self.parse_macro_arguments(tokens, paren_idx, mac)?;
+        let (args, end_idx) = self.parse_macro_arguments(tokens, paren_idx, mac, full_line)?;
 
         self.context.disabled_macros.insert(name.to_string());
-        let substituted = self.replace_macro_parameters(mac, name, &args, depth + 1)?;
+        let substituted = self.replace_macro_parameters(mac, name, &args, depth + 1, full_line)?;
         self.context.disabled_macros.remove(name);
         let pasted = PreprocessorEngine::apply_token_pasting(&substituted);
-        let expanded = self.expand_tokens(&pasted, depth + 1)?;
+        let expanded = self.expand_tokens(&pasted, depth + 1, full_line)?;
         self.context.disabled_macros.insert(name.to_string());
         out.extend(expanded);
 
@@ -928,6 +1018,7 @@ impl PreprocessorDriver {
         tokens: &[Token],
         paren_idx: usize,
         _mac: &Macro,
+        full_line: &str,
     ) -> Result<(MacroArguments, usize), PreprocessError> {
         let mut args = Vec::new();
         let mut paren_depth = 1;
@@ -976,7 +1067,8 @@ impl PreprocessorDriver {
             self.context.current_file.clone(),
             self.context.current_line,
             "unterminated macro arguments".to_string(),
-        ))
+        )
+        .with_source_line(full_line.to_string()))
     }
 
     fn replace_macro_parameters(
@@ -985,6 +1077,7 @@ impl PreprocessorDriver {
         _name: &str,
         args: &[Vec<Token>],
         depth: usize,
+        full_line: &str,
     ) -> Result<Vec<Token>, PreprocessError> {
         let params_list = match &mac.params {
             Some(p) => p,
@@ -1021,7 +1114,7 @@ impl PreprocessorDriver {
 
                 Token::Identifier(id) => {
                     if let Some(pos) = is_param(id) {
-                        let expanded = self.expand_tokens(&args[pos], depth + 1)?;
+                        let expanded = self.expand_tokens(&args[pos], depth + 1, full_line)?;
                         replaced.extend(expanded);
                         continue;
                     }
@@ -1029,7 +1122,7 @@ impl PreprocessorDriver {
                     if id == "__VA_ARGS__" && mac.is_variadic {
                         let start = params_list.len();
                         for idx in start..args.len() {
-                            let expanded = self.expand_tokens(&args[idx], depth + 1)?;
+                            let expanded = self.expand_tokens(&args[idx], depth + 1, full_line)?;
                             replaced.extend(expanded);
                             if idx + 1 < args.len() {
                                 replaced.push(Token::Other(",".into()));
