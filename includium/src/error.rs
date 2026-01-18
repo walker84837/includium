@@ -136,11 +136,7 @@ impl PreprocessError {
 
 impl fmt::Display for PreprocessError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let loc = if let Some(col) = self.column {
-            format!("{}:{}:{}", self.file, self.line, col)
-        } else {
-            format!("{}:{}", self.file, self.line)
-        };
+        let is_fake_location = self.file.starts_with('<') || self.line == 0;
 
         let message = match &self.kind {
             PreprocessErrorKind::IncludeNotFound(path) => {
@@ -161,18 +157,29 @@ impl fmt::Display for PreprocessError {
             PreprocessErrorKind::Io(err) => {
                 format!("I/O error: {}", err)
             }
-            PreprocessErrorKind::Other(message) => message.clone(),
+            PreprocessErrorKind::Other(msg) => msg.clone(),
         };
 
-        write!(f, "{}: {}", loc, message)?;
+        if is_fake_location {
+            // For internal/synthetic locations, show brief error with context for maintainers
+            write!(
+                f,
+                "preprocessor error ({}:{}): {}",
+                self.file, self.line, message
+            )?;
+        } else {
+            let loc = if let Some(col) = self.column {
+                format!("{}:{}:{}", self.file, self.line, col)
+            } else {
+                format!("{}:{}", self.file, self.line)
+            };
+            write!(f, "{}: {}", loc, message)?;
+        }
 
         if let (Some(col), Some(source_line)) = (self.column, &self.source_line) {
             write!(f, "\n{}\n", source_line)?;
             let indent = " ".repeat(col.saturating_sub(1));
             write!(f, "{}^", indent)?;
-            if col > 1 {
-                write!(f, "{}", "^".repeat(col.saturating_sub(1)))?;
-            }
         }
 
         Ok(())

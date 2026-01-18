@@ -469,6 +469,7 @@ int var PASTE3(_,x,_) = 42;
 int x = 1;
 "#;
         let mut pp = Preprocessor::new();
+        pp.set_current_file("test.c".to_string());
         let result = pp.process(src);
 
         assert!(result.is_err());
@@ -476,7 +477,7 @@ int x = 1;
         let display = format!("{}", error);
 
         // Should contain location
-        assert!(display.contains(":2:"));
+        assert!(display.contains("test.c:2:"));
         // Should contain source line
         assert!(display.contains("#define"));
         // Should contain caret

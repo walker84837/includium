@@ -220,6 +220,256 @@ impl PreprocessorEngine {
         Ok(tokens)
     }
 
+    /// Evaluate a preprocessor expression from tokens
+    ///
+    /// # Errors
+    /// Returns an error message if the expression is malformed.
+    pub fn evaluate_expression_tokens<F>(tokens: &[ExprToken], is_defined: F) -> Result<i64, String>
+    where
+        F: Fn(&str) -> bool,
+    {
+        let mut pos = 0;
+        let result = Self::parse_or(tokens, &mut pos, &is_defined)?;
+        if pos != tokens.len() {
+            return Err("Unexpected tokens at end of expression".to_string());
+        }
+        Ok(result)
+    }
+
+    fn parse_or<F>(tokens: &[ExprToken], pos: &mut usize, is_defined: &F) -> Result<i64, String>
+    where
+        F: Fn(&str) -> bool,
+    {
+        let mut left = Self::parse_and(tokens, pos, is_defined)?;
+        while *pos < tokens.len() {
+            match tokens[*pos] {
+                ExprToken::Or => {
+                    *pos += 1;
+                    let right = Self::parse_and(tokens, pos, is_defined)?;
+                    left = i64::from(left != 0 || right != 0);
+                }
+                _ => break,
+            }
+        }
+        Ok(left)
+    }
+
+    fn parse_and<F>(tokens: &[ExprToken], pos: &mut usize, is_defined: &F) -> Result<i64, String>
+    where
+        F: Fn(&str) -> bool,
+    {
+        let mut left = Self::parse_comparison(tokens, pos, is_defined)?;
+        while *pos < tokens.len() {
+            match tokens[*pos] {
+                ExprToken::And => {
+                    *pos += 1;
+                    let right = Self::parse_comparison(tokens, pos, is_defined)?;
+                    left = i64::from(left != 0 && right != 0);
+                }
+                _ => break,
+            }
+        }
+        Ok(left)
+    }
+
+    fn parse_comparison<F>(
+        tokens: &[ExprToken],
+        pos: &mut usize,
+        is_defined: &F,
+    ) -> Result<i64, String>
+    where
+        F: Fn(&str) -> bool,
+    {
+        let left = Self::parse_additive(tokens, pos, is_defined)?;
+        if *pos < tokens.len() {
+            match tokens[*pos] {
+                ExprToken::Equal => {
+                    *pos += 1;
+                    let right = Self::parse_additive(tokens, pos, is_defined)?;
+                    return Ok(i64::from(left == right));
+                }
+                ExprToken::NotEqual => {
+                    *pos += 1;
+                    let right = Self::parse_additive(tokens, pos, is_defined)?;
+                    return Ok(i64::from(left != right));
+                }
+                ExprToken::Less => {
+                    *pos += 1;
+                    let right = Self::parse_additive(tokens, pos, is_defined)?;
+                    return Ok(i64::from(left < right));
+                }
+                ExprToken::LessEqual => {
+                    *pos += 1;
+                    let right = Self::parse_additive(tokens, pos, is_defined)?;
+                    return Ok(i64::from(left <= right));
+                }
+                ExprToken::Greater => {
+                    *pos += 1;
+                    let right = Self::parse_additive(tokens, pos, is_defined)?;
+                    return Ok(i64::from(left > right));
+                }
+                ExprToken::GreaterEqual => {
+                    *pos += 1;
+                    let right = Self::parse_additive(tokens, pos, is_defined)?;
+                    return Ok(i64::from(left >= right));
+                }
+                _ => {}
+            }
+        }
+        Ok(left)
+    }
+
+    fn parse_additive<F>(
+        tokens: &[ExprToken],
+        pos: &mut usize,
+        is_defined: &F,
+    ) -> Result<i64, String>
+    where
+        F: Fn(&str) -> bool,
+    {
+        let mut left = Self::parse_multiplicative(tokens, pos, is_defined)?;
+        while *pos < tokens.len() {
+            match tokens[*pos] {
+                ExprToken::Plus => {
+                    *pos += 1;
+                    let right = Self::parse_multiplicative(tokens, pos, is_defined)?;
+                    left += right;
+                }
+                ExprToken::Minus => {
+                    *pos += 1;
+                    let right = Self::parse_multiplicative(tokens, pos, is_defined)?;
+                    left -= right;
+                }
+                _ => break,
+            }
+        }
+        Ok(left)
+    }
+
+    fn parse_multiplicative<F>(
+        tokens: &[ExprToken],
+        pos: &mut usize,
+        is_defined: &F,
+    ) -> Result<i64, String>
+    where
+        F: Fn(&str) -> bool,
+    {
+        let mut left = Self::parse_unary(tokens, pos, is_defined)?;
+        while *pos < tokens.len() {
+            match tokens[*pos] {
+                ExprToken::Multiply => {
+                    *pos += 1;
+                    let right = Self::parse_unary(tokens, pos, is_defined)?;
+                    left *= right;
+                }
+                ExprToken::Divide => {
+                    *pos += 1;
+                    let right = Self::parse_unary(tokens, pos, is_defined)?;
+                    if right == 0 {
+                        return Err("Division by zero".to_string());
+                    }
+                    left /= right;
+                }
+                ExprToken::Modulo => {
+                    *pos += 1;
+                    let right = Self::parse_unary(tokens, pos, is_defined)?;
+                    if right == 0 {
+                        return Err("Modulo by zero".to_string());
+                    }
+                    left %= right;
+                }
+                _ => break,
+            }
+        }
+        Ok(left)
+    }
+
+    fn parse_unary<F>(tokens: &[ExprToken], pos: &mut usize, is_defined: &F) -> Result<i64, String>
+    where
+        F: Fn(&str) -> bool,
+    {
+        if *pos < tokens.len() {
+            match tokens[*pos] {
+                ExprToken::Not => {
+                    *pos += 1;
+                    let expr = Self::parse_unary(tokens, pos, is_defined)?;
+                    return Ok(i64::from(expr == 0));
+                }
+                ExprToken::Minus => {
+                    *pos += 1;
+                    let expr = Self::parse_unary(tokens, pos, is_defined)?;
+                    return Ok(-expr);
+                }
+                _ => {}
+            }
+        }
+        Self::parse_primary(tokens, pos, is_defined)
+    }
+
+    fn parse_primary<F>(
+        tokens: &[ExprToken],
+        pos: &mut usize,
+        is_defined: &F,
+    ) -> Result<i64, String>
+    where
+        F: Fn(&str) -> bool,
+    {
+        if *pos >= tokens.len() {
+            return Err("Unexpected end of expression".to_string());
+        }
+
+        match &tokens[*pos] {
+            ExprToken::Number(val) => {
+                *pos += 1;
+                Ok(*val)
+            }
+            ExprToken::Identifier(ident) => {
+                *pos += 1;
+                if ident == "defined" {
+                    if *pos < tokens.len() && matches!(tokens[*pos], ExprToken::LParen) {
+                        *pos += 1;
+                        if *pos >= tokens.len() || !matches!(tokens[*pos], ExprToken::Identifier(_))
+                        {
+                            return Err("Expected identifier after defined(".to_string());
+                        }
+                        if let ExprToken::Identifier(id) = &tokens[*pos] {
+                            *pos += 1;
+                            if *pos >= tokens.len() || !matches!(tokens[*pos], ExprToken::RParen) {
+                                return Err("Expected ) after defined(identifier".to_string());
+                            }
+                            *pos += 1;
+                            Ok(i64::from(is_defined(id)))
+                        } else {
+                            unreachable!()
+                        }
+                    } else if *pos < tokens.len() {
+                        if let ExprToken::Identifier(id) = &tokens[*pos] {
+                            let defined = is_defined(id);
+                            *pos += 1;
+                            return Ok(i64::from(defined));
+                        }
+                        Err("defined must be followed by identifier or (identifier)".to_string())
+                    } else {
+                        Err("defined must be followed by identifier or (identifier)".to_string())
+                    }
+                } else {
+                    // Preprocessor treats undefined identifiers as 0
+                    Ok(0)
+                }
+            }
+            ExprToken::LParen => {
+                *pos += 1;
+                let val = Self::parse_or(tokens, pos, is_defined)?;
+                if *pos >= tokens.len() || !matches!(tokens[*pos], ExprToken::RParen) {
+                    return Err("Expected )".to_string());
+                }
+                *pos += 1;
+                Ok(val)
+            }
+            _ => Err("Expected number or identifier".to_string()),
+        }
+    }
+
     /// Strip comments from a string, replacing with spaces, but not inside strings
     pub fn strip_comments(input: &str) -> String {
         if !input.contains('/') {

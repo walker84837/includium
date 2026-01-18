@@ -41,9 +41,6 @@ pub struct PreprocessorContext {
     /// Current line number for __LINE__ macro
     pub current_line: usize,
 
-    /// Current column position (byte offset) for error reporting
-    pub current_column: usize,
-
     /// Maximum recursion depth for macro expansion
     pub recursion_limit: usize,
 
@@ -73,7 +70,6 @@ impl PreprocessorContext {
             conditional_stack: Vec::new(),
             current_file: "<stdin>".to_string(),
             current_line: 1,
-            current_column: 1,
             recursion_limit: 128,
             compiler: Compiler::GCC,
             warning_handler: None,
