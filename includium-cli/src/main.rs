@@ -150,7 +150,7 @@ struct Cli {
 enum TargetValue {
     Linux,
     Windows,
-    #[clap(name = "mac-os")]
+    #[clap(name = "macos")]
     MacOS,
 }
 

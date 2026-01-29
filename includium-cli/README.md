@@ -46,7 +46,7 @@ includium input.c --dry-run
 ### Target Configuration
 
 - `-t, --target <TARGET>`: Target operating system [default: linux]  
-  Possible values: linux, windows, mac-os
+  Possible values: linux, windows, macos
 - `-c, --compiler <COMPILER>`: Compiler dialect [default: gcc]
   Possible values: gcc, clang, msvc
 - `-I, --include <DIR>`: Add directory to include search path
@@ -89,7 +89,7 @@ $ includium example.c -o processed.c
 includium source.c --target windows --compiler msvc -o win_processed.c
 
 # Compile for macOS
-includium source.c --target mac-os --compiler clang -o mac_processed.c
+includium source.c --target macos --compiler clang -o mac_processed.c
 ```
 
 ### Include directories
