@@ -44,7 +44,10 @@ mod error;
 mod macro_def;
 mod token;
 
-pub use config::{Compiler, IncludeResolver, PreprocessorConfig, Target, WarningHandler};
+pub use config::{
+    Compiler, IncludeContext, IncludeKind, IncludeResolver, PreprocessorConfig, Target,
+    WarningHandler,
+};
 pub use context::PreprocessorContext;
 pub use driver::PreprocessorDriver;
 pub use error::{PreprocessError, PreprocessErrorKind};
@@ -551,5 +554,26 @@ int x = 1;
         let display = format!("{}", error);
 
         assert!(display.contains("#endif without #if"));
+    }
+
+    #[test]
+    fn macro_expansion_edge_cases() {
+        let src = r#"
+#define MAKE_ID(x) id_##x
+int id_1 = MAKE_ID(1);
+int id_2 = MAKE_ID(2);
+
+#define INC(x) ((x) + 1)
+#define DEC(x) ((x) - 1)
+#define INC_DEC(x) INC(DEC(x))
+int inc_dec_test = INC_DEC(10);
+"#;
+        let mut pp = Preprocessor::new();
+        let out = pp.process(src).unwrap();
+        println!("DEBUG OUTPUT:\n{}", out);
+
+        assert!(out.contains("int id_1 = id_1;"));
+        assert!(out.contains("int id_2 = id_2;"));
+        assert!(out.contains("int inc_dec_test = ((((10) - 1)) + 1);"));
     }
 }

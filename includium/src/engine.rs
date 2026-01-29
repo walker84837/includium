@@ -149,6 +149,7 @@ impl PreprocessorEngine {
                         tokens.push(ExprToken::Not);
                     }
                 }
+                '~' => tokens.push(ExprToken::BitNot),
                 '=' => {
                     if let Some(&'=') = chars.peek() {
                         chars.next();
@@ -165,6 +166,9 @@ impl PreprocessorEngine {
                     if let Some(&'=') = chars.peek() {
                         chars.next();
                         tokens.push(ExprToken::LessEqual);
+                    } else if let Some(&'<') = chars.peek() {
+                        chars.next();
+                        tokens.push(ExprToken::ShiftLeft);
                     } else {
                         tokens.push(ExprToken::Less);
                     }
@@ -173,6 +177,9 @@ impl PreprocessorEngine {
                     if let Some(&'=') = chars.peek() {
                         chars.next();
                         tokens.push(ExprToken::GreaterEqual);
+                    } else if let Some(&'>') = chars.peek() {
+                        chars.next();
+                        tokens.push(ExprToken::ShiftRight);
                     } else {
                         tokens.push(ExprToken::Greater);
                     }
@@ -182,11 +189,7 @@ impl PreprocessorEngine {
                         chars.next();
                         tokens.push(ExprToken::And);
                     } else {
-                        return Err(PreprocessError::other(
-                            "<expression>".to_string(),
-                            0,
-                            "Invalid operator: &".to_string(),
-                        ));
+                        tokens.push(ExprToken::BitAnd);
                     }
                 }
                 '|' => {
@@ -194,13 +197,10 @@ impl PreprocessorEngine {
                         chars.next();
                         tokens.push(ExprToken::Or);
                     } else {
-                        return Err(PreprocessError::other(
-                            "<expression>".to_string(),
-                            0,
-                            "Invalid operator: |".to_string(),
-                        ));
+                        tokens.push(ExprToken::BitOr);
                     }
                 }
+                '^' => tokens.push(ExprToken::BitXor),
                 '+' => tokens.push(ExprToken::Plus),
                 '-' => tokens.push(ExprToken::Minus),
                 '*' => tokens.push(ExprToken::Multiply),
@@ -258,13 +258,102 @@ impl PreprocessorEngine {
     where
         F: Fn(&str) -> bool,
     {
-        let mut left = Self::parse_comparison(tokens, pos, is_defined)?;
+        let mut left = Self::parse_bit_or(tokens, pos, is_defined)?;
         while *pos < tokens.len() {
             match tokens[*pos] {
                 ExprToken::And => {
                     *pos += 1;
-                    let right = Self::parse_comparison(tokens, pos, is_defined)?;
+                    let right = Self::parse_bit_or(tokens, pos, is_defined)?;
                     left = i64::from(left != 0 && right != 0);
+                }
+                _ => break,
+            }
+        }
+        Ok(left)
+    }
+
+    fn parse_bit_or<F>(tokens: &[ExprToken], pos: &mut usize, is_defined: &F) -> Result<i64, String>
+    where
+        F: Fn(&str) -> bool,
+    {
+        let mut left = Self::parse_bit_xor(tokens, pos, is_defined)?;
+        while *pos < tokens.len() {
+            match tokens[*pos] {
+                ExprToken::BitOr => {
+                    *pos += 1;
+                    let right = Self::parse_bit_xor(tokens, pos, is_defined)?;
+                    left |= right;
+                }
+                _ => break,
+            }
+        }
+        Ok(left)
+    }
+
+    fn parse_bit_xor<F>(
+        tokens: &[ExprToken],
+        pos: &mut usize,
+        is_defined: &F,
+    ) -> Result<i64, String>
+    where
+        F: Fn(&str) -> bool,
+    {
+        let mut left = Self::parse_bit_and(tokens, pos, is_defined)?;
+        while *pos < tokens.len() {
+            match tokens[*pos] {
+                ExprToken::BitXor => {
+                    *pos += 1;
+                    let right = Self::parse_bit_and(tokens, pos, is_defined)?;
+                    left ^= right;
+                }
+                _ => break,
+            }
+        }
+        Ok(left)
+    }
+
+    fn parse_bit_and<F>(
+        tokens: &[ExprToken],
+        pos: &mut usize,
+        is_defined: &F,
+    ) -> Result<i64, String>
+    where
+        F: Fn(&str) -> bool,
+    {
+        let mut left = Self::parse_equality(tokens, pos, is_defined)?;
+        while *pos < tokens.len() {
+            match tokens[*pos] {
+                ExprToken::BitAnd => {
+                    *pos += 1;
+                    let right = Self::parse_equality(tokens, pos, is_defined)?;
+                    left &= right;
+                }
+                _ => break,
+            }
+        }
+        Ok(left)
+    }
+
+    fn parse_equality<F>(
+        tokens: &[ExprToken],
+        pos: &mut usize,
+        is_defined: &F,
+    ) -> Result<i64, String>
+    where
+        F: Fn(&str) -> bool,
+    {
+        let mut left = Self::parse_comparison(tokens, pos, is_defined)?;
+        while *pos < tokens.len() {
+            match tokens[*pos] {
+                ExprToken::Equal => {
+                    *pos += 1;
+                    let right = Self::parse_comparison(tokens, pos, is_defined)?;
+                    left = i64::from(left == right);
+                }
+                ExprToken::NotEqual => {
+                    *pos += 1;
+                    let right = Self::parse_comparison(tokens, pos, is_defined)?;
+                    left = i64::from(left != right);
                 }
                 _ => break,
             }
@@ -280,40 +369,53 @@ impl PreprocessorEngine {
     where
         F: Fn(&str) -> bool,
     {
-        let left = Self::parse_additive(tokens, pos, is_defined)?;
-        if *pos < tokens.len() {
+        let mut left = Self::parse_shift(tokens, pos, is_defined)?;
+        while *pos < tokens.len() {
             match tokens[*pos] {
-                ExprToken::Equal => {
-                    *pos += 1;
-                    let right = Self::parse_additive(tokens, pos, is_defined)?;
-                    return Ok(i64::from(left == right));
-                }
-                ExprToken::NotEqual => {
-                    *pos += 1;
-                    let right = Self::parse_additive(tokens, pos, is_defined)?;
-                    return Ok(i64::from(left != right));
-                }
                 ExprToken::Less => {
                     *pos += 1;
-                    let right = Self::parse_additive(tokens, pos, is_defined)?;
-                    return Ok(i64::from(left < right));
+                    let right = Self::parse_shift(tokens, pos, is_defined)?;
+                    left = i64::from(left < right);
                 }
                 ExprToken::LessEqual => {
                     *pos += 1;
-                    let right = Self::parse_additive(tokens, pos, is_defined)?;
-                    return Ok(i64::from(left <= right));
+                    let right = Self::parse_shift(tokens, pos, is_defined)?;
+                    left = i64::from(left <= right);
                 }
                 ExprToken::Greater => {
                     *pos += 1;
-                    let right = Self::parse_additive(tokens, pos, is_defined)?;
-                    return Ok(i64::from(left > right));
+                    let right = Self::parse_shift(tokens, pos, is_defined)?;
+                    left = i64::from(left > right);
                 }
                 ExprToken::GreaterEqual => {
                     *pos += 1;
-                    let right = Self::parse_additive(tokens, pos, is_defined)?;
-                    return Ok(i64::from(left >= right));
+                    let right = Self::parse_shift(tokens, pos, is_defined)?;
+                    left = i64::from(left >= right);
                 }
-                _ => {}
+                _ => break,
+            }
+        }
+        Ok(left)
+    }
+
+    fn parse_shift<F>(tokens: &[ExprToken], pos: &mut usize, is_defined: &F) -> Result<i64, String>
+    where
+        F: Fn(&str) -> bool,
+    {
+        let mut left = Self::parse_additive(tokens, pos, is_defined)?;
+        while *pos < tokens.len() {
+            match tokens[*pos] {
+                ExprToken::ShiftLeft => {
+                    *pos += 1;
+                    let right = Self::parse_additive(tokens, pos, is_defined)?;
+                    left <<= right;
+                }
+                ExprToken::ShiftRight => {
+                    *pos += 1;
+                    let right = Self::parse_additive(tokens, pos, is_defined)?;
+                    left >>= right;
+                }
+                _ => break,
             }
         }
         Ok(left)
@@ -395,10 +497,20 @@ impl PreprocessorEngine {
                     let expr = Self::parse_unary(tokens, pos, is_defined)?;
                     return Ok(i64::from(expr == 0));
                 }
+                ExprToken::BitNot => {
+                    *pos += 1;
+                    let expr = Self::parse_unary(tokens, pos, is_defined)?;
+                    return Ok(!expr);
+                }
                 ExprToken::Minus => {
                     *pos += 1;
                     let expr = Self::parse_unary(tokens, pos, is_defined)?;
                     return Ok(-expr);
+                }
+                ExprToken::Plus => {
+                    *pos += 1;
+                    let expr = Self::parse_unary(tokens, pos, is_defined)?;
+                    return Ok(expr);
                 }
                 _ => {}
             }
@@ -676,11 +788,49 @@ impl PreprocessorEngine {
         let right_str = Self::token_to_string(right);
         let concatenated = format!("{left_str}{right_str}");
 
-        // Result is identifier only if both inputs are identifiers
-        match (left, right) {
-            (Token::Identifier(_), Token::Identifier(_)) => Token::Identifier(concatenated),
-            _ => Token::Other(concatenated),
+        // Check if result forms a valid identifier
+        if Self::is_valid_identifier(&concatenated) {
+            Token::Identifier(concatenated)
+        } else {
+            Token::Other(concatenated)
         }
+    }
+
+    /// Check if a string forms a valid C identifier
+    fn is_valid_identifier(s: &str) -> bool {
+        if s.is_empty() {
+            return false;
+        }
+
+        let mut chars = s.chars();
+
+        // First character must be identifier start
+        if let Some(first) = chars.next() {
+            if !Self::is_identifier_start_char(first) {
+                return false;
+            }
+        } else {
+            return false;
+        }
+
+        // Remaining characters must be identifier continue
+        for ch in chars {
+            if !Self::is_identifier_continue_char(ch) {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Check if character can start an identifier
+    fn is_identifier_start_char(ch: char) -> bool {
+        ch.is_ascii_alphabetic() || ch == '_'
+    }
+
+    /// Check if character can continue an identifier
+    fn is_identifier_continue_char(ch: char) -> bool {
+        ch.is_ascii_alphanumeric() || ch == '_'
     }
 
     /// Apply token pasting (##) to a sequence of tokens

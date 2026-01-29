@@ -6,10 +6,21 @@ use crate::macro_def::Macro;
 
 /// State for conditional compilation directives
 #[derive(Clone, Debug)]
-pub enum ConditionalState {
-    If(bool),
-    Elif(bool),
-    Else(bool),
+pub struct ConditionalState {
+    /// Whether the current branch is active and its code should be emitted
+    pub is_active: bool,
+    /// Whether any branch in this #if/#endif block has been taken already
+    pub any_branch_taken: bool,
+}
+
+impl ConditionalState {
+    /// Create a new conditional state for an #if/#ifdef/#ifndef
+    pub fn new(active: bool) -> Self {
+        Self {
+            is_active: active,
+            any_branch_taken: active,
+        }
+    }
 }
 
 /// Context containing all state for preprocessor operations
