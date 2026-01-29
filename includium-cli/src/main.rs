@@ -7,7 +7,7 @@ use includium::{Compiler, PreprocessorConfig, Target, WarningHandler};
 use std::{
     fs,
     io::{self, prelude::*},
-    path::PathBuf,
+    path::{Path, PathBuf},
     rc::Rc,
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
@@ -345,14 +345,12 @@ fn create_config(cli: &Cli) -> Result<PreprocessorConfig> {
         let mut search_dirs = Vec::new();
 
         // For local includes, search the directory of the including file first
-        if kind == includium::IncludeKind::Local {
-            if let Some(including_file) = context.include_stack.last() {
-                if including_file != "<stdin>" {
-                    if let Some(parent) = std::path::Path::new(including_file).parent() {
-                        search_dirs.push(parent.to_path_buf());
-                    }
-                }
-            }
+        if kind == includium::IncludeKind::Local
+            && let Some(including_file) = context.include_stack.last()
+            && including_file != "<stdin>"
+            && let Some(parent) = Path::new(including_file).parent()
+        {
+            search_dirs.push(parent.to_path_buf());
         }
 
         // Add explicitly provided include directories
