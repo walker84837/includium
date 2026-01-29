@@ -1,17 +1,17 @@
-#![warn(missing_docs)]
 #![warn(clippy::unwrap_used)]
 #![warn(clippy::expect_used)]
-
-//! # Includium CLI
-//!
-//! A command-line interface for the includium C preprocessor library.
 
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use includium::{Compiler, PreprocessorConfig, Target, WarningHandler};
-use std::path::PathBuf;
-use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::{
+    fs,
+    io::{self, prelude::*},
+    path::PathBuf,
+    rc::Rc,
+    sync::atomic::{AtomicBool, Ordering},
+    time::{Duration, Instant},
+};
 
 /// Exit codes for different error conditions
 mod exit_code {
@@ -207,10 +207,10 @@ fn main() {
 
 /// Determine the appropriate exit code based on the error
 fn determine_exit_code(error: &anyhow::Error) -> i32 {
-    if let Some(io_err) = error.downcast_ref::<std::io::Error>() {
+    if let Some(io_err) = error.downcast_ref::<io::Error>() {
         match io_err.kind() {
-            std::io::ErrorKind::NotFound => exit_code::IO_ERROR,
-            std::io::ErrorKind::PermissionDenied => exit_code::IO_ERROR,
+            io::ErrorKind::NotFound => exit_code::IO_ERROR,
+            io::ErrorKind::PermissionDenied => exit_code::IO_ERROR,
             _ => exit_code::IO_ERROR,
         }
     } else if error.downcast_ref::<includium::PreprocessError>().is_some() {
@@ -240,7 +240,7 @@ fn run() -> Result<()> {
     let config = create_config(&cli)?;
 
     // Preprocess the input
-    let start_time = std::time::Instant::now();
+    let start_time = Instant::now();
     let processed_output = match includium::process(&input_content, &config) {
         Ok(output) => output,
         Err(e) => {
@@ -276,7 +276,7 @@ fn validate_args(cli: &Cli) -> Result<()> {
     // Check that input and output are not the same file
     if let Some(output) = &cli.output
         && output != &PathBuf::from("-")
-        && std::fs::canonicalize(output).ok() == std::fs::canonicalize(&cli.input).ok()
+        && fs::canonicalize(output).ok() == fs::canonicalize(&cli.input).ok()
     {
         return Err(anyhow::anyhow!(
             "Input and output files cannot be the same: {}",
@@ -359,16 +359,14 @@ fn create_warning_handler(cli: &Cli) -> WarningHandler {
 /// Read input from file or stdin
 fn read_input(input_path: &PathBuf) -> Result<String> {
     if input_path == &PathBuf::from("-") {
-        // Read from stdin
-        use std::io::Read;
         let mut buffer = String::new();
-        std::io::stdin()
+        io::stdin()
             .read_to_string(&mut buffer)
             .context("Failed to read from stdin")?;
         Ok(buffer)
     } else {
         // Read from file
-        std::fs::read_to_string(input_path)
+        fs::read_to_string(input_path)
             .with_context(|| format!("Failed to read input file: {}", input_path.display()))
     }
 }
@@ -384,7 +382,7 @@ fn write_output(cli: &Cli, content: &str) -> Result<()> {
 
     match &cli.output {
         Some(output_path) if output_path != &PathBuf::from("-") => {
-            std::fs::write(output_path, output_content).with_context(|| {
+            fs::write(output_path, output_content).with_context(|| {
                 format!("Failed to write to output file: {}", output_path.display())
             })?;
         }
@@ -418,7 +416,7 @@ fn write_json_output(cli: &Cli, content: &str) -> Result<()> {
 }
 
 /// Show verbose information
-fn show_verbose_info(cli: &Cli, processing_time: std::time::Duration) {
+fn show_verbose_info(cli: &Cli, processing_time: Duration) {
     if cli.quiet {
         return;
     }
