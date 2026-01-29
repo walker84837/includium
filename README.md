@@ -6,9 +6,11 @@
 
 > A complete C preprocessor implementation in Rust.
 
-[API Documentation](https://docs.rs/includium) | [Examples](examples/) | [Changelog](CHANGELOG.md)
+[API Documentation](https://docs.rs/includium) | [CLI Documentation](includium-cli/) | [Changelog](CHANGELOG.md)
 
 `includium` is a robust, well-tested C preprocessor that can process C/C++ source code with macros, conditional compilation, and includes. It supports target-specific preprocessing for different operating systems and compilers.
+
+This repository contains both the core library and a command-line interface (`includium-cli`).
 
 ## Features
 
@@ -34,7 +36,9 @@
 - [Installation](#installation)
 - [Usage](#usage)
   - [As a Library](#as-a-library)
-  - [As a CLI (TODO)](#as-a-cli-todo)
+  - [As a CLI](#as-a-cli)
+- [Development](#development)
+  - [Just Tasks](#just-tasks)
 - [Building from Source](#building-from-source)
 - [Advanced Usage](#advanced-usage)
   - [Custom Include Resolvers](#custom-include-resolvers)
@@ -83,13 +87,41 @@ const char* platform = "Linux";
 }
 ```
 
-### As a CLI (TODO)
+### As a CLI
 
-> [!IMPORTANT]
-> The CLI is planned but not yet released.  
-> Currently, `includium` is intended to be used as a **library**.
+The `includium-cli` package provides a command-line interface for the C preprocessor. See the [CLI documentation](includium-cli/) for detailed usage instructions.
 
-Includium also has a CLI tool `includium-cli`.
+Basic installation:
+```bash
+cargo install includium-cli
+```
+
+Basic usage:
+```bash
+# Preprocess a file
+includium input.c -o output.i
+
+# Cross-compile for Windows
+includium input.c --target windows --compiler msvc -o win_output.i
+```
+
+## Development
+
+### Just Tasks
+
+This project uses [Just](https://github.com/casey/just) for task automation. Available tasks:
+
+|Task|Description|Arguments|
+|:---|:----------|:--------|
+|`build`|Build the workspace (library + CLI)|None|
+|`build-release`|Build in release mode|None|
+|`test`|Run all tests|None|
+|`check`|Run all checks (format, lint, test)|None|
+|`run`|Run the CLI with arguments|`--help`|
+|`run-release`|Run the CLI in release mode|`input.c -o output.i`|
+|`install`|Install the CLI locally|None|
+|`clean`|Clean build artifacts|None|
+|`docs`|Generate documentation|None|
 
 ## Building from Source
 
@@ -99,14 +131,14 @@ Includium also has a CLI tool `includium-cli`.
    cd includium
    ```
 
-2. Build the library:
+2. Build the workspace:
    ```bash
-   cargo build --release
+   cargo build # or just build
    ```
 
 3. Run tests:
    ```bash
-   cargo test
+   cargo test # or just test
    ```
 
 ## Advanced Usage
@@ -150,14 +182,7 @@ We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.
 
 ### Roadmap
 
-- [ ] CLI (includium-cli):
-  ```bash
-  # Install the CLI
-  cargo install includium-cli
-
-  # Basic usage
-  includium-cli source.c --output preprocessed.c --target linux --compiler clang
-  ```
+- [x] CLI (includium-cli)
 - [ ] Integration tests
 - [ ] Benchmarks with `cargo bench`
 - [ ] CI with cross-platform tests for multiple compilers
