@@ -44,7 +44,7 @@ mod error;
 mod macro_def;
 mod token;
 
-pub use config::{Compiler, IncludeResolver, PreprocessorConfig, Target};
+pub use config::{Compiler, IncludeResolver, PreprocessorConfig, Target, WarningHandler};
 pub use context::PreprocessorContext;
 pub use driver::PreprocessorDriver;
 pub use error::{PreprocessError, PreprocessErrorKind};
