@@ -1,5 +1,6 @@
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
+use std::ptr;
 use std::rc::Rc;
 
 use crate::config::{Compiler, PreprocessorConfig, Target};
@@ -76,7 +77,7 @@ pub unsafe extern "C" fn includium_new(
         let c_config = unsafe { &*config };
         match preprocessor_config_from_c(c_config) {
             Ok(rust_config) => driver.apply_config(&rust_config),
-            Err(_) => return std::ptr::null_mut(), // Invalid config
+            Err(_) => return ptr::null_mut(), // Invalid config
         }
     }
     Box::into_raw(Box::new(driver))
@@ -107,7 +108,7 @@ pub unsafe extern "C" fn includium_process(
     input: *const c_char,
 ) -> *mut c_char {
     if pp.is_null() || input.is_null() {
-        return std::ptr::null_mut();
+        return ptr::null_mut();
     }
 
     let input_str = unsafe { CStr::from_ptr(input).to_str().unwrap_or("") };
@@ -115,9 +116,9 @@ pub unsafe extern "C" fn includium_process(
     match driver.process(input_str) {
         Ok(result) => match CString::new(result) {
             Ok(cstr) => cstr.into_raw(),
-            Err(_) => std::ptr::null_mut(),
+            Err(_) => ptr::null_mut(),
         },
-        Err(_) => std::ptr::null_mut(),
+        Err(_) => ptr::null_mut(),
     }
 }
 

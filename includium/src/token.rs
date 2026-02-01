@@ -36,4 +36,10 @@ pub(crate) enum ExprToken {
     GreaterEqual,
     And,
     Or,
+    BitAnd,
+    BitOr,
+    BitXor,
+    BitNot,
+    ShiftLeft,
+    ShiftRight,
 }
