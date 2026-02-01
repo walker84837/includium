@@ -1,6 +1,6 @@
 use crate::config::{IncludeContext, IncludeKind, PreprocessorConfig};
 use crate::context::{ConditionalState, PreprocessorContext};
-use crate::engine::PreprocessorEngine;
+use crate::engine;
 use crate::error::PreprocessError;
 use crate::macro_def::Macro;
 use crate::token::{ExprToken, Token};
@@ -197,14 +197,14 @@ impl PreprocessorDriver {
     /// Returns `PreprocessError` if there's a malformed directive,
     /// macro recursion limit is exceeded, or conditional blocks are unterminated.
     pub fn process(&mut self, input: &str) -> Result<String, PreprocessError> {
-        let spliced = PreprocessorEngine::line_splice(input);
-        let pragma_processed = PreprocessorEngine::process_pragma(&spliced);
+        let spliced = engine::line_splice(input);
+        let pragma_processed = engine::process_pragma(&spliced);
         let mut out_lines: Vec<String> = Vec::new();
         self.context.conditional_stack.clear();
         self.context.current_line = 1;
 
         for current_line_str in pragma_processed.lines() {
-            let stripped_line = PreprocessorEngine::strip_comments(current_line_str);
+            let stripped_line = engine::strip_comments(current_line_str);
             let ctx = DiagnosticContext::new(
                 self.context.current_file.clone(),
                 self.context.current_line,
@@ -216,9 +216,9 @@ impl PreprocessorDriver {
                     out_lines.push(content);
                 }
             } else if self.can_emit_line() {
-                let tokens = PreprocessorEngine::tokenize_line(&stripped_line);
+                let tokens = engine::tokenize_line(&stripped_line);
                 let expanded_tokens = self.expand_tokens(&tokens, 0, &ctx)?;
-                let reconstructed = PreprocessorEngine::tokens_to_string(&expanded_tokens);
+                let reconstructed = engine::tokens_to_string(&expanded_tokens);
                 out_lines.push(reconstructed);
             }
             self.context.current_line += 1;
@@ -365,9 +365,9 @@ impl PreprocessorDriver {
         }
 
         let body_str: String = chars.collect();
-        let stripped = PreprocessorEngine::strip_comments(&body_str);
+        let stripped = engine::strip_comments(&body_str);
         let stripped_body = stripped.trim();
-        let body_tokens = PreprocessorEngine::tokenize_line(stripped_body);
+        let body_tokens = engine::tokenize_line(stripped_body);
         self.context.macros.insert(
             name,
             Macro {
@@ -666,9 +666,9 @@ impl PreprocessorDriver {
         expr: &str,
         ctx: &DiagnosticContext,
     ) -> Result<bool, PreprocessError> {
-        let tokens = PreprocessorEngine::tokenize_line(expr);
+        let tokens = engine::tokenize_line(expr);
         let expanded = self.expand_tokens(&tokens, 0, ctx)?;
-        let expr_str = PreprocessorEngine::tokens_to_string(&expanded);
+        let expr_str = engine::tokens_to_string(&expanded);
         let trimmed = expr_str.trim();
 
         self.parse_expression(trimmed, ctx)
@@ -695,7 +695,7 @@ impl PreprocessorDriver {
         expr: &str,
         ctx: &DiagnosticContext,
     ) -> Result<bool, PreprocessError> {
-        let tokens = PreprocessorEngine::tokenize_expression(expr)?;
+        let tokens = engine::tokenize_expression(expr)?;
         let result = self.evaluate_expression_tokens(&tokens, ctx)?;
         Ok(result != 0)
     }
@@ -705,8 +705,7 @@ impl PreprocessorDriver {
         tokens: &[ExprToken],
         ctx: &DiagnosticContext,
     ) -> Result<i64, PreprocessError> {
-        let result =
-            PreprocessorEngine::evaluate_expression_tokens(tokens, |id| self.is_defined(id));
+        let result = engine::evaluate_expression_tokens(tokens, |id| self.is_defined(id));
         match result {
             Ok(val) => Ok(val),
             Err(msg) => Err(self.generic_error(&msg, ctx)),
@@ -792,9 +791,7 @@ impl PreprocessorDriver {
                         continue;
                     }
 
-                    if let Some(token) =
-                        PreprocessorEngine::expand_predefined_macro(&self.context, name)
-                    {
+                    if let Some(token) = engine::expand_predefined_macro(&self.context, name) {
                         out.push(token);
                         i += 1;
                     } else if self.context.macros.contains_key(name)
@@ -854,7 +851,7 @@ impl PreprocessorDriver {
         out: &mut Vec<Token>,
         ctx: &DiagnosticContext,
     ) -> Result<(), PreprocessError> {
-        let pasted = PreprocessorEngine::apply_token_pasting(&mac.body);
+        let pasted = engine::apply_token_pasting(&mac.body);
         let expanded = self.expand_tokens(&pasted, depth + 1, ctx)?;
         out.extend(expanded);
         Ok(())
@@ -892,7 +889,7 @@ impl PreprocessorDriver {
         let substituted = self.replace_macro_parameters(mac, name, &args, depth + 1, ctx)?;
 
         self.context.disabled_macros.insert(name.to_string());
-        let pasted = PreprocessorEngine::apply_token_pasting(&substituted);
+        let pasted = engine::apply_token_pasting(&substituted);
         let expanded_res = self.expand_tokens(&pasted, depth + 1, ctx);
         self.context.disabled_macros.remove(name);
 
@@ -928,18 +925,14 @@ impl PreprocessorDriver {
                                 ')' => {
                                     paren_depth -= 1;
                                     if paren_depth == 0 {
-                                        args.push(PreprocessorEngine::trim_token_whitespace(
-                                            current_arg,
-                                        ));
+                                        args.push(engine::trim_token_whitespace(current_arg));
                                         return Ok((args, i + 1));
                                     }
                                     current_arg.push(Token::Other(")".to_string()));
                                 }
                                 ',' => {
                                     if paren_depth == 1 {
-                                        args.push(PreprocessorEngine::trim_token_whitespace(
-                                            current_arg,
-                                        ));
+                                        args.push(engine::trim_token_whitespace(current_arg));
                                         current_arg = Vec::new();
                                     } else {
                                         current_arg.push(Token::Other(",".to_string()));
@@ -990,7 +983,7 @@ impl PreprocessorDriver {
         let is_param = |id: &str| params_list.iter().position(|p| p == id);
         let escape_arg = |ts: &[Token]| {
             ts.iter()
-                .map(PreprocessorEngine::token_to_string)
+                .map(engine::token_to_string)
                 .collect::<String>()
                 .replace('\\', "\\\\")
                 .replace('"', "\\\"")

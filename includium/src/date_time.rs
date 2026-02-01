@@ -61,7 +61,7 @@ pub fn format_time() -> String {
     let since_epoch = now.duration_since(UNIX_EPOCH).unwrap_or_default();
     let total_seconds = since_epoch.as_secs() as i64;
 
-    // Adjust for local timezone (simplified - assumes 2 hour offset for CET)
+    // TODO: Adjust for local timezone (simplified - assumes 2 hour offset for CET)
     // In a real implementation, this should use proper timezone detection
     // For testing purposes, we detect if we're likely in CET by checking the difference
     // with what gcc/clang produce vs our UTC time
@@ -77,7 +77,7 @@ pub fn format_time() -> String {
     format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
 }
 
-fn is_leap_year(year: u64) -> bool {
+const fn is_leap_year(year: u64) -> bool {
     (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
 }
 
