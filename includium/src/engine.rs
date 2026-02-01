@@ -726,7 +726,9 @@ impl PreprocessorEngine {
                                 j += 1;
                                 // Replace with #pragma
                                 result.push_str("#pragma ");
-                                result.push_str(&string_content);
+                                // Unescape common escape sequences
+                                let unescaped = string_content.replace("\\\"", "\"");
+                                result.push_str(&unescaped);
                                 i = j;
                                 continue;
                             }

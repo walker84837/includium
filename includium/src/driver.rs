@@ -4,7 +4,8 @@ use crate::engine::PreprocessorEngine;
 use crate::error::PreprocessError;
 use crate::macro_def::Macro;
 use crate::token::{ExprToken, Token};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::rc::Rc;
 
 type MacroArguments = Vec<Vec<Token>>;
@@ -228,7 +229,7 @@ impl PreprocessorDriver {
             return Err(self.conditional_error("unterminated #if/#ifdef/#ifndef", &ctx));
         }
 
-        Ok(out_lines.join("\n"))
+        Ok(out_lines.join("\n") + "\n")
     }
 
     /// Checks if the current line should be emitted in the output based on the active
@@ -430,19 +431,16 @@ impl PreprocessorDriver {
             return Err(self.directive_error("include", ctx));
         };
 
+        let context = IncludeContext {
+            include_stack: self.context.include_stack.clone(),
+            include_dirs: Vec::new(),
+        };
+
         let Some(resolver) = &self.context.include_resolver else {
             return Err(self.include_error(&p, ctx));
         };
 
-        let mut include_stack = self.context.include_stack.clone();
-        include_stack.push(self.context.current_file.clone());
-
-        let context = IncludeContext {
-            include_stack,
-            include_dirs: Vec::new(),
-        };
-
-        let Some(content) = resolver(&p, kind, &context) else {
+        let Some(content) = resolver(&p, kind.clone(), &context) else {
             return Err(self.include_error(&p, ctx));
         };
 
@@ -456,9 +454,26 @@ impl PreprocessorDriver {
             return Ok(Some(String::new()));
         }
 
+        // Push current file to include stack BEFORE resolving path for proper context
         self.context
             .include_stack
             .push(self.context.current_file.clone());
+
+        // For local includes, try to resolve the actual file path
+        // This ensures __FILE__ shows the correct relative path
+        let resolved_path = if kind == IncludeKind::Local {
+            self.context
+                .include_stack
+                .last()
+                .and_then(|including_file| Path::new(including_file).parent())
+                .map(|parent_dir| parent_dir.join(&p))
+                .filter(|candidate| candidate.exists())
+                .map(|candidate| candidate.to_string_lossy().to_string())
+                .unwrap_or_else(|| p.clone())
+        } else {
+            p.clone()
+        };
+
         let mut nested = Self {
             context: PreprocessorContext {
                 macros: self.context.macros.clone(),
@@ -466,14 +481,15 @@ impl PreprocessorDriver {
                 recursion_limit: self.context.recursion_limit,
                 included_once: self.context.included_once.clone(),
                 include_stack: self.context.include_stack.clone(),
-                disabled_macros: std::collections::HashSet::new(),
+                disabled_macros: HashSet::new(),
                 conditional_stack: Vec::new(),
                 current_line: 1,
-                current_file: p.clone(),
+                current_file: resolved_path,
                 compiler: self.context.compiler.clone(),
                 warning_handler: self.context.warning_handler.clone(),
             },
         };
+
         let processed = nested.process(&content)?;
         self.context.include_stack.pop();
         self.context.macros = nested.context.macros;
