@@ -1,13 +1,23 @@
 use crate::config::{IncludeContext, IncludeKind, PreprocessorConfig};
 use crate::context::{ConditionalState, PreprocessorContext};
-use crate::engine::PreprocessorEngine;
+use crate::engine;
 use crate::error::PreprocessError;
 use crate::macro_def::Macro;
 use crate::token::{ExprToken, Token};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::rc::Rc;
 
 type MacroArguments = Vec<Vec<Token>>;
+
+/// Parameters for macro expansion
+struct MacroExpansionParams<'a> {
+    tokens: &'a [Token],
+    i: usize,
+    depth: usize,
+    out: &'a mut Vec<Token>,
+    ctx: &'a DiagnosticContext,
+}
 
 /// Context for error diagnostics, bundling location information
 #[derive(Clone, Debug)]
@@ -196,27 +206,28 @@ impl PreprocessorDriver {
     /// Returns `PreprocessError` if there's a malformed directive,
     /// macro recursion limit is exceeded, or conditional blocks are unterminated.
     pub fn process(&mut self, input: &str) -> Result<String, PreprocessError> {
-        let spliced = PreprocessorEngine::line_splice(input);
-        let pragma_processed = PreprocessorEngine::process_pragma(&spliced);
+        let spliced = engine::line_splice(input);
+        let pragma_processed = engine::process_pragma(&spliced);
         let mut out_lines: Vec<String> = Vec::new();
         self.context.conditional_stack.clear();
         self.context.current_line = 1;
 
         for current_line_str in pragma_processed.lines() {
+            let stripped_line = engine::strip_comments(current_line_str);
             let ctx = DiagnosticContext::new(
                 self.context.current_file.clone(),
                 self.context.current_line,
                 Some(current_line_str.to_string()),
             );
 
-            if let Some(directive) = Self::extract_directive(current_line_str) {
-                if let Some(content) = self.handle_directive(directive, &ctx)? {
-                    out_lines.push(content);
-                }
+            if let Some(directive) = Self::extract_directive(&stripped_line)
+                && let Some(content) = self.handle_directive(directive, &ctx)?
+            {
+                out_lines.push(content);
             } else if self.can_emit_line() {
-                let tokens = PreprocessorEngine::tokenize_line(current_line_str);
+                let tokens = engine::tokenize_line(&stripped_line);
                 let expanded_tokens = self.expand_tokens(&tokens, 0, &ctx)?;
-                let reconstructed = PreprocessorEngine::tokens_to_string(&expanded_tokens);
+                let reconstructed = engine::tokens_to_string(&expanded_tokens);
                 out_lines.push(reconstructed);
             }
             self.context.current_line += 1;
@@ -227,19 +238,14 @@ impl PreprocessorDriver {
             return Err(self.conditional_error("unterminated #if/#ifdef/#ifndef", &ctx));
         }
 
-        Ok(out_lines.join("\n"))
+        Ok(out_lines.join("\n") + "\n")
     }
 
     /// Checks if the current line should be emitted in the output based on the active
     /// state of conditional compilation directives (#if, #ifdef, #else, etc.).
     fn can_emit_line(&self) -> bool {
         for state in &self.context.conditional_stack {
-            let active = match state {
-                ConditionalState::If(a) | ConditionalState::Elif(a) | ConditionalState::Else(a) => {
-                    *a
-                }
-            };
-            if !active {
+            if !state.is_active {
                 return false;
             }
         }
@@ -282,10 +288,7 @@ impl PreprocessorDriver {
                 Ok(None)
             }
             "line" => self.handle_line(rest, ctx),
-            "pragma" => {
-                self.handle_pragma(rest);
-                Ok(None)
-            }
+            "pragma" => Ok(self.handle_pragma(rest)),
             _ => Ok(None),
         }
     }
@@ -371,9 +374,9 @@ impl PreprocessorDriver {
         }
 
         let body_str: String = chars.collect();
-        let stripped = PreprocessorEngine::strip_comments(&body_str);
+        let stripped = engine::strip_comments(&body_str);
         let stripped_body = stripped.trim();
-        let body_tokens = PreprocessorEngine::tokenize_line(stripped_body);
+        let body_tokens = engine::tokenize_line(stripped_body);
         self.context.macros.insert(
             name,
             Macro {
@@ -437,16 +440,16 @@ impl PreprocessorDriver {
             return Err(self.directive_error("include", ctx));
         };
 
-        let Some(resolver) = &self.context.include_resolver else {
-            return Err(self.include_error(&p, ctx));
-        };
-
         let context = IncludeContext {
             include_stack: self.context.include_stack.clone(),
             include_dirs: Vec::new(),
         };
 
-        let Some(content) = resolver(&p, kind, &context) else {
+        let Some(resolver) = &self.context.include_resolver else {
+            return Err(self.include_error(&p, ctx));
+        };
+
+        let Some(content) = resolver(&p, kind.clone(), &context) else {
             return Err(self.include_error(&p, ctx));
         };
 
@@ -460,9 +463,26 @@ impl PreprocessorDriver {
             return Ok(Some(String::new()));
         }
 
+        // Push current file to include stack BEFORE resolving path for proper context
         self.context
             .include_stack
             .push(self.context.current_file.clone());
+
+        // For local includes, try to resolve the actual file path
+        // This ensures __FILE__ shows the correct relative path
+        let resolved_path = if kind == IncludeKind::Local {
+            self.context
+                .include_stack
+                .last()
+                .and_then(|including_file| Path::new(including_file).parent())
+                .map(|parent_dir| parent_dir.join(&p))
+                .filter(|candidate| candidate.exists())
+                .map(|candidate| candidate.to_string_lossy().to_string())
+                .unwrap_or_else(|| p.clone())
+        } else {
+            p.clone()
+        };
+
         let mut nested = Self {
             context: PreprocessorContext {
                 macros: self.context.macros.clone(),
@@ -470,14 +490,15 @@ impl PreprocessorDriver {
                 recursion_limit: self.context.recursion_limit,
                 included_once: self.context.included_once.clone(),
                 include_stack: self.context.include_stack.clone(),
-                disabled_macros: std::collections::HashSet::new(),
+                disabled_macros: HashSet::new(),
                 conditional_stack: Vec::new(),
                 current_line: 1,
-                current_file: p.clone(),
+                current_file: resolved_path,
                 compiler: self.context.compiler.clone(),
                 warning_handler: self.context.warning_handler.clone(),
             },
         };
+
         let processed = nested.process(&content)?;
         self.context.include_stack.pop();
         self.context.macros = nested.context.macros;
@@ -494,7 +515,7 @@ impl PreprocessorDriver {
         let defined = self.is_defined(name);
         self.context
             .conditional_stack
-            .push(ConditionalState::If(defined));
+            .push(ConditionalState::new(defined));
     }
 
     fn handle_ifndef(&mut self, rest: &str) {
@@ -502,7 +523,7 @@ impl PreprocessorDriver {
         let defined = self.is_defined(name);
         self.context
             .conditional_stack
-            .push(ConditionalState::If(!defined));
+            .push(ConditionalState::new(!defined));
     }
 
     fn handle_if(
@@ -513,7 +534,7 @@ impl PreprocessorDriver {
         let evaluated = self.evaluate_expression(rest, ctx)?;
         self.context
             .conditional_stack
-            .push(ConditionalState::If(evaluated));
+            .push(ConditionalState::new(evaluated));
         Ok(None)
     }
 
@@ -526,26 +547,62 @@ impl PreprocessorDriver {
             return Err(self.conditional_error("#elif without #if", ctx));
         }
 
-        let evaluated = self.evaluate_expression(rest, ctx)?;
+        let (already_taken, outer_active) = {
+            let last = self
+                .context
+                .conditional_stack
+                .last()
+                .ok_or_else(|| self.conditional_error("#elif without #if", ctx))?;
+            let outer_active = self
+                .context
+                .conditional_stack
+                .iter()
+                .rev()
+                .skip(1)
+                .all(|s| s.is_active);
+            (last.any_branch_taken, outer_active)
+        };
 
-        if let Some(last) = self.context.conditional_stack.last_mut() {
-            *last = ConditionalState::Elif(evaluated);
+        if already_taken || !outer_active {
+            if let Some(last) = self.context.conditional_stack.last_mut() {
+                last.is_active = false;
+            }
+        } else {
+            let evaluated = self.evaluate_expression(rest, ctx)?;
+            if let Some(last) = self.context.conditional_stack.last_mut() {
+                last.is_active = evaluated;
+                if evaluated {
+                    last.any_branch_taken = true;
+                }
+            }
         }
         Ok(None)
     }
 
     fn handle_else(&mut self, ctx: &DiagnosticContext) -> Result<Option<String>, PreprocessError> {
-        let is_active = if let Some(last) = self.context.conditional_stack.last() {
-            matches!(
-                last,
-                ConditionalState::If(false) | ConditionalState::Elif(false)
-            )
-        } else {
+        if self.context.conditional_stack.is_empty() {
             return Err(self.conditional_error("#else without #if", ctx));
+        }
+
+        let (already_taken, outer_active) = {
+            let last = self
+                .context
+                .conditional_stack
+                .last()
+                .ok_or_else(|| self.conditional_error("#else without #if", ctx))?;
+            let outer_active = self
+                .context
+                .conditional_stack
+                .iter()
+                .rev()
+                .skip(1)
+                .all(|s| s.is_active);
+            (last.any_branch_taken, outer_active)
         };
 
         if let Some(last) = self.context.conditional_stack.last_mut() {
-            *last = ConditionalState::Else(is_active);
+            last.is_active = !already_taken && outer_active;
+            last.any_branch_taken = true; // No more branches after else
         }
         Ok(None)
     }
@@ -626,30 +683,23 @@ impl PreprocessorDriver {
         expr: &str,
         ctx: &DiagnosticContext,
     ) -> Result<bool, PreprocessError> {
-        let tokens = PreprocessorEngine::tokenize_line(expr);
+        let tokens = engine::tokenize_line(expr);
         let expanded = self.expand_tokens(&tokens, 0, ctx)?;
-        let expr_str = PreprocessorEngine::tokens_to_string(&expanded);
+        let expr_str = engine::tokens_to_string(&expanded);
         let trimmed = expr_str.trim();
-
-        if trimmed == "defined" || trimmed.starts_with("defined") {
-            let identifier =
-                if let (Some(start), Some(end)) = (trimmed.find('('), trimmed.find(')')) {
-                    trimmed[start + 1..end].trim()
-                } else {
-                    trimmed.strip_prefix("defined").unwrap_or(trimmed).trim()
-                };
-            return Ok(self.is_defined(identifier));
-        }
 
         self.parse_expression(trimmed, ctx)
     }
 
-    fn handle_pragma(&mut self, rest: &str) {
+    fn handle_pragma(&mut self, rest: &str) -> Option<String> {
         let trimmed = rest.trim();
         if trimmed == "once" {
             self.context
                 .included_once
                 .insert(self.context.current_file.clone());
+            None
+        } else {
+            Some(format!("#pragma {rest}"))
         }
     }
 
@@ -662,7 +712,7 @@ impl PreprocessorDriver {
         expr: &str,
         ctx: &DiagnosticContext,
     ) -> Result<bool, PreprocessError> {
-        let tokens = PreprocessorEngine::tokenize_expression(expr)?;
+        let tokens = engine::tokenize_expression(expr)?;
         let result = self.evaluate_expression_tokens(&tokens, ctx)?;
         Ok(result != 0)
     }
@@ -672,8 +722,7 @@ impl PreprocessorDriver {
         tokens: &[ExprToken],
         ctx: &DiagnosticContext,
     ) -> Result<i64, PreprocessError> {
-        let result =
-            PreprocessorEngine::evaluate_expression_tokens(tokens, |id| self.is_defined(id));
+        let result = engine::evaluate_expression_tokens(tokens, |id| self.is_defined(id));
         match result {
             Ok(val) => Ok(val),
             Err(msg) => Err(self.generic_error(&msg, ctx)),
@@ -711,17 +760,72 @@ impl PreprocessorDriver {
         while i < tokens.len() {
             match &tokens[i] {
                 Token::Identifier(name) => {
-                    if let Some(token) =
-                        PreprocessorEngine::expand_predefined_macro(&self.context, name)
-                    {
+                    if name == "defined" {
+                        out.push(tokens[i].clone());
+                        i += 1;
+                        // Skip whitespace
+                        while i < tokens.len()
+                            && matches!(&tokens[i], Token::Other(s) if s.chars().all(char::is_whitespace))
+                        {
+                            out.push(tokens[i].clone());
+                            i += 1;
+                        }
+                        if i < tokens.len() {
+                            if let Token::Other(s) = &tokens[i]
+                                && s == "("
+                            {
+                                out.push(tokens[i].clone());
+                                i += 1;
+                                // Skip whitespace
+                                while i < tokens.len()
+                                    && matches!(&tokens[i], Token::Other(s) if s.chars().all(char::is_whitespace))
+                                {
+                                    out.push(tokens[i].clone());
+                                    i += 1;
+                                }
+                                if i < tokens.len() {
+                                    out.push(tokens[i].clone()); // The identifier
+                                    i += 1;
+                                }
+                                // Skip whitespace
+                                while i < tokens.len()
+                                    && matches!(&tokens[i], Token::Other(s) if s.chars().all(char::is_whitespace))
+                                {
+                                    out.push(tokens[i].clone());
+                                    i += 1;
+                                }
+                                if i < tokens.len()
+                                    && matches!(&tokens[i], Token::Other(s) if s == ")")
+                                {
+                                    out.push(tokens[i].clone());
+                                    i += 1;
+                                }
+                            } else {
+                                out.push(tokens[i].clone()); // The identifier
+                                i += 1;
+                            }
+                        }
+                        continue;
+                    }
+
+                    if let Some(token) = engine::expand_predefined_macro(&self.context, name) {
                         out.push(token);
                         i += 1;
                     } else if self.context.macros.contains_key(name)
                         && !self.context.disabled_macros.contains(name)
                     {
                         let mac = self.context.macros[name].clone();
-                        i = self
-                            .handle_macro_invocation(&mac, name, tokens, i, depth, &mut out, ctx)?;
+                        i = self.handle_macro_invocation(
+                            &mac,
+                            name,
+                            MacroExpansionParams {
+                                tokens,
+                                i,
+                                depth,
+                                out: &mut out,
+                                ctx,
+                            },
+                        )?;
                     } else {
                         out.push(tokens[i].clone());
                         i += 1;
@@ -740,29 +844,25 @@ impl PreprocessorDriver {
         &mut self,
         mac: &Macro,
         name: &str,
-        tokens: &[Token],
-        i: usize,
-        depth: usize,
-        out: &mut Vec<Token>,
-        ctx: &DiagnosticContext,
+        params: MacroExpansionParams,
     ) -> Result<usize, PreprocessError> {
         if mac.params.is_some() {
-            let next_non_whitespace = self.find_next_non_whitespace(tokens, i + 1);
-            let is_function_like_invocation = next_non_whitespace < tokens.len()
-                && matches!(&tokens[next_non_whitespace], Token::Other(s) if s.trim_start().starts_with('(') || s == "(");
+            let next_non_whitespace = self.find_next_non_whitespace(params.tokens, params.i + 1);
+            let is_function_like_invocation = next_non_whitespace < params.tokens.len()
+                && matches!(&params.tokens[next_non_whitespace], Token::Other(s) if s.trim_start().starts_with('(') || s == "(");
             if is_function_like_invocation {
-                self.handle_function_like_macro(mac, name, tokens, i, depth, out, ctx)
+                self.handle_function_like_macro(mac, name, params)
             } else {
-                self.context.disabled_macros.insert(name.to_string());
-                self.handle_object_like_macro(mac, depth, out, ctx)?;
-                self.context.disabled_macros.remove(name);
-                Ok(i + 1)
+                // Function-like macro without ( is not expanded
+                params.out.push(Token::Identifier(name.to_string()));
+                Ok(params.i + 1)
             }
         } else {
             self.context.disabled_macros.insert(name.to_string());
-            self.handle_object_like_macro(mac, depth, out, ctx)?;
+            let result = self.handle_object_like_macro(mac, params.depth, params.out, params.ctx);
             self.context.disabled_macros.remove(name);
-            Ok(i + 1)
+            result?;
+            Ok(params.i + 1)
         }
     }
 
@@ -773,7 +873,7 @@ impl PreprocessorDriver {
         out: &mut Vec<Token>,
         ctx: &DiagnosticContext,
     ) -> Result<(), PreprocessError> {
-        let pasted = PreprocessorEngine::apply_token_pasting(&mac.body);
+        let pasted = engine::apply_token_pasting(&mac.body);
         let expanded = self.expand_tokens(&pasted, depth + 1, ctx)?;
         out.extend(expanded);
         Ok(())
@@ -783,38 +883,67 @@ impl PreprocessorDriver {
         &mut self,
         mac: &Macro,
         name: &str,
-        tokens: &[Token],
-        i: usize,
-        depth: usize,
-        out: &mut Vec<Token>,
-        ctx: &DiagnosticContext,
+        params: MacroExpansionParams,
     ) -> Result<usize, PreprocessError> {
-        let paren_token_index = tokens.iter().enumerate().skip(i).find_map(|(k, token)| {
-            if let Token::Other(s) = token {
-                if s.trim().starts_with('(') {
-                    Some(k)
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        });
+        // Disable the macro at the very start to prevent recursion during argument parsing
+        self.context.disabled_macros.insert(name.to_string());
+
+        let paren_token_index =
+            params
+                .tokens
+                .iter()
+                .enumerate()
+                .skip(params.i)
+                .find_map(|(k, token)| {
+                    if let Token::Other(s) = token
+                        && s.trim().starts_with('(')
+                    {
+                        Some(k)
+                    } else {
+                        None
+                    }
+                });
 
         let paren_idx = match paren_token_index {
             Some(idx) => idx,
-            None => return Ok(i + 1),
+            None => {
+                self.context.disabled_macros.remove(name);
+                return Ok(params.i + 1);
+            }
         };
 
-        let (args, end_idx) = self.parse_macro_arguments(tokens, paren_idx, mac, ctx)?;
+        let (args, end_idx) = {
+            let parse_result =
+                self.parse_macro_arguments(params.tokens, paren_idx, mac, params.ctx);
+            match parse_result {
+                Ok(args) => args,
+                Err(e) => {
+                    self.context.disabled_macros.remove(name);
+                    return Err(e);
+                }
+            }
+        };
 
-        self.context.disabled_macros.insert(name.to_string());
-        let substituted = self.replace_macro_parameters(mac, name, &args, depth + 1, ctx)?;
+        let substituted = {
+            let replace_result =
+                self.replace_macro_parameters(mac, name, &args, params.depth + 1, params.ctx);
+            match replace_result {
+                Ok(substituted) => substituted,
+                Err(e) => {
+                    self.context.disabled_macros.remove(name);
+                    return Err(e);
+                }
+            }
+        };
+
+        let pasted = engine::apply_token_pasting(&substituted);
+        let expanded_res = self.expand_tokens(&pasted, params.depth + 1, params.ctx);
+
+        // Clean up disabled_macros before returning or propagating error
         self.context.disabled_macros.remove(name);
-        let pasted = PreprocessorEngine::apply_token_pasting(&substituted);
-        let expanded = self.expand_tokens(&pasted, depth + 1, ctx)?;
-        self.context.disabled_macros.insert(name.to_string());
-        out.extend(expanded);
+
+        let expanded_tokens = expanded_res?;
+        params.out.extend(expanded_tokens);
 
         Ok(end_idx)
     }
@@ -834,32 +963,38 @@ impl PreprocessorDriver {
         while i < tokens.len() {
             match &tokens[i] {
                 Token::Other(s) => {
-                    for ch in s.chars() {
-                        match ch {
-                            '(' => paren_depth += 1,
-                            ')' => {
-                                paren_depth -= 1;
-                                if paren_depth == 0 {
-                                    args.push(PreprocessorEngine::trim_token_whitespace(
-                                        current_arg,
-                                    ));
-                                    return Ok((args, i + 1));
+                    // Check if this token contains special characters that need to be processed individually
+                    if s.contains(['(', ')', ',']) {
+                        for ch in s.chars() {
+                            match ch {
+                                '(' => {
+                                    paren_depth += 1;
+                                    current_arg.push(Token::Other("(".to_string()));
                                 }
-                            }
-                            ',' => {
-                                if paren_depth == 1 {
-                                    args.push(PreprocessorEngine::trim_token_whitespace(
-                                        current_arg,
-                                    ));
-                                    current_arg = Vec::new();
-                                } else {
+                                ')' => {
+                                    paren_depth -= 1;
+                                    if paren_depth == 0 {
+                                        args.push(engine::trim_token_whitespace(current_arg));
+                                        return Ok((args, i + 1));
+                                    }
+                                    current_arg.push(Token::Other(")".to_string()));
+                                }
+                                ',' => {
+                                    if paren_depth == 1 {
+                                        args.push(engine::trim_token_whitespace(current_arg));
+                                        current_arg = Vec::new();
+                                    } else {
+                                        current_arg.push(Token::Other(",".to_string()));
+                                    }
+                                }
+                                _ => {
                                     current_arg.push(Token::Other(ch.to_string()));
                                 }
                             }
-                            _ => {
-                                current_arg.push(Token::Other(ch.to_string()));
-                            }
                         }
+                    } else {
+                        // Token doesn't contain special characters, treat as single unit
+                        current_arg.push(Token::Other(s.clone()));
                     }
                 }
                 other => {
@@ -897,7 +1032,7 @@ impl PreprocessorDriver {
         let is_param = |id: &str| params_list.iter().position(|p| p == id);
         let escape_arg = |ts: &[Token]| {
             ts.iter()
-                .map(PreprocessorEngine::token_to_string)
+                .map(engine::token_to_string)
                 .collect::<String>()
                 .replace('\\', "\\\\")
                 .replace('"', "\\\"")

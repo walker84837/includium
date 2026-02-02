@@ -7,7 +7,8 @@ use includium::{Compiler, PreprocessorConfig, Target, WarningHandler};
 use std::{
     fs,
     io::{self, prelude::*},
-    path::PathBuf,
+    path::{Path, PathBuf},
+    process,
     rc::Rc,
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
@@ -190,7 +191,7 @@ static WARNINGS_OCCURRED: AtomicBool = AtomicBool::new(false);
 
 /// Main application entry point
 fn main() {
-    std::process::exit(match run() {
+    process::exit(match run() {
         Ok(_) => {
             if WARNINGS_OCCURRED.load(Ordering::Relaxed) {
                 exit_code::GENERAL_ERROR
@@ -241,7 +242,12 @@ fn run() -> Result<()> {
 
     // Preprocess the input
     let start_time = Instant::now();
-    let processed_output = match includium::process(&input_content, &config) {
+    let mut driver = includium::PreprocessorDriver::new();
+    driver.apply_config(&config);
+    if cli.input.as_os_str() != "-" {
+        driver.set_current_file(cli.input.to_string_lossy().to_string());
+    }
+    let processed_output = match driver.process(&input_content) {
         Ok(output) => output,
         Err(e) => {
             eprintln!("Preprocessing error: {:#?}", e);
@@ -333,6 +339,36 @@ fn create_config(cli: &Cli) -> Result<PreprocessorConfig> {
 
     // Set recursion limit
     config.recursion_limit = cli.recursion_limit;
+
+    // Setup include resolver
+    let include_dirs = cli.include_dirs.clone();
+    config.include_resolver = Some(Rc::new(move |path, kind, context| {
+        let mut search_dirs = Vec::new();
+
+        // For local includes, search the directory of the including file first
+        if kind == includium::IncludeKind::Local
+            && let Some(including_file) = context.include_stack.last()
+            && including_file != "<stdin>"
+            && let Some(parent) = Path::new(including_file).parent()
+        {
+            search_dirs.push(parent.to_path_buf());
+        }
+
+        // Add explicitly provided include directories
+        for dir in &include_dirs {
+            search_dirs.push(dir.clone());
+        }
+
+        // Search for the file
+        for dir in search_dirs {
+            let full_path = dir.join(path);
+            if full_path.exists() && full_path.is_file() {
+                return fs::read_to_string(full_path).ok();
+            }
+        }
+
+        None
+    }));
 
     // Setup warning handler if warnings are enabled
     if cli.warnings {

@@ -1,4 +1,6 @@
+use std::error;
 use std::fmt;
+use std::io;
 
 /// Semantic error kinds that can occur during preprocessing
 #[derive(Debug)]
@@ -14,7 +16,7 @@ pub enum PreprocessErrorKind {
     /// Conditional compilation error
     ConditionalError(String),
     /// I/O error (e.g., file reading/writing)
-    Io(std::io::Error),
+    Io(io::Error),
     /// Other preprocessing error
     Other(String),
 }
@@ -97,7 +99,7 @@ impl PreprocessError {
 
     /// Create an I/O error
     #[inline]
-    pub fn io_error(file: String, line: usize, error: std::io::Error) -> Self {
+    pub fn io_error(file: String, line: usize, error: io::Error) -> Self {
         PreprocessError {
             kind: PreprocessErrorKind::Io(error),
             file,
@@ -121,7 +123,7 @@ impl PreprocessError {
 
     /// Set column information for more precise error location
     #[must_use]
-    pub fn with_column(mut self, column: usize) -> Self {
+    pub const fn with_column(mut self, column: usize) -> Self {
         self.column = Some(column);
         self
     }
@@ -186,8 +188,8 @@ impl fmt::Display for PreprocessError {
     }
 }
 
-impl std::error::Error for PreprocessError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+impl error::Error for PreprocessError {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match &self.kind {
             PreprocessErrorKind::Io(err) => Some(err),
             _ => None,
@@ -195,8 +197,8 @@ impl std::error::Error for PreprocessError {
     }
 }
 
-impl From<std::io::Error> for PreprocessError {
-    fn from(err: std::io::Error) -> Self {
+impl From<io::Error> for PreprocessError {
+    fn from(err: io::Error) -> Self {
         // For I/O errors without specific location context, use generic location
         PreprocessError::io_error("<internal>".to_string(), 0, err)
     }

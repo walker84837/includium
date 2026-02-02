@@ -1,15 +1,28 @@
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::config::{Compiler, IncludeResolver, Target, WarningHandler};
 use crate::macro_def::Macro;
 
+use crate::{PreprocessorConfig, engine};
+use std::rc::Rc;
+
 /// State for conditional compilation directives
 #[derive(Clone, Debug)]
-pub enum ConditionalState {
-    If(bool),
-    Elif(bool),
-    Else(bool),
+pub struct ConditionalState {
+    /// Whether the current branch is active and its code should be emitted
+    pub is_active: bool,
+    /// Whether any branch in this #if/#endif block has been taken already
+    pub any_branch_taken: bool,
+}
+
+impl ConditionalState {
+    /// Create a new conditional state for an #if/#ifdef/#ifndef
+    pub const fn new(active: bool) -> Self {
+        Self {
+            is_active: active,
+            any_branch_taken: active,
+        }
+    }
 }
 
 /// Context containing all state for preprocessor operations
@@ -77,7 +90,7 @@ impl PreprocessorContext {
     }
 
     /// Apply configuration to the context
-    pub fn apply_config(&mut self, config: &crate::config::PreprocessorConfig) {
+    pub fn apply_config(&mut self, config: &PreprocessorConfig) {
         self.compiler = config.compiler.clone();
         self.recursion_limit = config.recursion_limit;
         self.include_resolver.clone_from(&config.include_resolver);
@@ -185,11 +198,8 @@ impl PreprocessorContext {
         is_variadic: bool,
         is_builtin: bool,
     ) {
-        use crate::engine::PreprocessorEngine;
-        use std::rc::Rc;
-
-        let stripped_body = PreprocessorEngine::strip_comments(body.as_ref());
-        let body_tokens = PreprocessorEngine::tokenize_line(&stripped_body);
+        let stripped_body = engine::strip_comments(body.as_ref());
+        let body_tokens = engine::tokenize_line(&stripped_body);
         self.macros.insert(
             name.as_ref().to_string(),
             Macro {
