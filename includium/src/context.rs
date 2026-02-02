@@ -17,7 +17,7 @@ pub struct ConditionalState {
 
 impl ConditionalState {
     /// Create a new conditional state for an #if/#ifdef/#ifndef
-    pub fn new(active: bool) -> Self {
+    pub const fn new(active: bool) -> Self {
         Self {
             is_active: active,
             any_branch_taken: active,

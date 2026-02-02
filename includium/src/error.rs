@@ -123,7 +123,7 @@ impl PreprocessError {
 
     /// Set column information for more precise error location
     #[must_use]
-    pub fn with_column(mut self, column: usize) -> Self {
+    pub const fn with_column(mut self, column: usize) -> Self {
         self.column = Some(column);
         self
     }

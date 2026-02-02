@@ -10,6 +10,15 @@ use std::rc::Rc;
 
 type MacroArguments = Vec<Vec<Token>>;
 
+/// Parameters for macro expansion
+struct MacroExpansionParams<'a> {
+    tokens: &'a [Token],
+    i: usize,
+    depth: usize,
+    out: &'a mut Vec<Token>,
+    ctx: &'a DiagnosticContext,
+}
+
 /// Context for error diagnostics, bundling location information
 #[derive(Clone, Debug)]
 pub struct DiagnosticContext {
@@ -211,10 +220,10 @@ impl PreprocessorDriver {
                 Some(current_line_str.to_string()),
             );
 
-            if let Some(directive) = Self::extract_directive(&stripped_line) {
-                if let Some(content) = self.handle_directive(directive, &ctx)? {
-                    out_lines.push(content);
-                }
+            if let Some(directive) = Self::extract_directive(&stripped_line)
+                && let Some(content) = self.handle_directive(directive, &ctx)?
+            {
+                out_lines.push(content);
             } else if self.can_emit_line() {
                 let tokens = engine::tokenize_line(&stripped_line);
                 let expanded_tokens = self.expand_tokens(&tokens, 0, &ctx)?;
@@ -539,7 +548,11 @@ impl PreprocessorDriver {
         }
 
         let (already_taken, outer_active) = {
-            let last = self.context.conditional_stack.last().unwrap();
+            let last = self
+                .context
+                .conditional_stack
+                .last()
+                .ok_or_else(|| self.conditional_error("#elif without #if", ctx))?;
             let outer_active = self
                 .context
                 .conditional_stack
@@ -572,7 +585,11 @@ impl PreprocessorDriver {
         }
 
         let (already_taken, outer_active) = {
-            let last = self.context.conditional_stack.last().unwrap();
+            let last = self
+                .context
+                .conditional_stack
+                .last()
+                .ok_or_else(|| self.conditional_error("#else without #if", ctx))?;
             let outer_active = self
                 .context
                 .conditional_stack
@@ -798,8 +815,17 @@ impl PreprocessorDriver {
                         && !self.context.disabled_macros.contains(name)
                     {
                         let mac = self.context.macros[name].clone();
-                        i = self
-                            .handle_macro_invocation(&mac, name, tokens, i, depth, &mut out, ctx)?;
+                        i = self.handle_macro_invocation(
+                            &mac,
+                            name,
+                            MacroExpansionParams {
+                                tokens,
+                                i,
+                                depth,
+                                out: &mut out,
+                                ctx,
+                            },
+                        )?;
                     } else {
                         out.push(tokens[i].clone());
                         i += 1;
@@ -818,29 +844,25 @@ impl PreprocessorDriver {
         &mut self,
         mac: &Macro,
         name: &str,
-        tokens: &[Token],
-        i: usize,
-        depth: usize,
-        out: &mut Vec<Token>,
-        ctx: &DiagnosticContext,
+        params: MacroExpansionParams,
     ) -> Result<usize, PreprocessError> {
         if mac.params.is_some() {
-            let next_non_whitespace = self.find_next_non_whitespace(tokens, i + 1);
-            let is_function_like_invocation = next_non_whitespace < tokens.len()
-                && matches!(&tokens[next_non_whitespace], Token::Other(s) if s.trim_start().starts_with('(') || s == "(");
+            let next_non_whitespace = self.find_next_non_whitespace(params.tokens, params.i + 1);
+            let is_function_like_invocation = next_non_whitespace < params.tokens.len()
+                && matches!(&params.tokens[next_non_whitespace], Token::Other(s) if s.trim_start().starts_with('(') || s == "(");
             if is_function_like_invocation {
-                self.handle_function_like_macro(mac, name, tokens, i, depth, out, ctx)
+                self.handle_function_like_macro(mac, name, params)
             } else {
                 // Function-like macro without ( is not expanded
-                out.push(Token::Identifier(name.to_string()));
-                Ok(i + 1)
+                params.out.push(Token::Identifier(name.to_string()));
+                Ok(params.i + 1)
             }
         } else {
             self.context.disabled_macros.insert(name.to_string());
-            let result = self.handle_object_like_macro(mac, depth, out, ctx);
+            let result = self.handle_object_like_macro(mac, params.depth, params.out, params.ctx);
             self.context.disabled_macros.remove(name);
             result?;
-            Ok(i + 1)
+            Ok(params.i + 1)
         }
     }
 
@@ -861,40 +883,67 @@ impl PreprocessorDriver {
         &mut self,
         mac: &Macro,
         name: &str,
-        tokens: &[Token],
-        i: usize,
-        depth: usize,
-        out: &mut Vec<Token>,
-        ctx: &DiagnosticContext,
+        params: MacroExpansionParams,
     ) -> Result<usize, PreprocessError> {
-        let paren_token_index = tokens.iter().enumerate().skip(i).find_map(|(k, token)| {
-            if let Token::Other(s) = token {
-                if s.trim().starts_with('(') {
-                    Some(k)
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        });
+        // Disable the macro at the very start to prevent recursion during argument parsing
+        self.context.disabled_macros.insert(name.to_string());
+
+        let paren_token_index =
+            params
+                .tokens
+                .iter()
+                .enumerate()
+                .skip(params.i)
+                .find_map(|(k, token)| {
+                    if let Token::Other(s) = token
+                        && s.trim().starts_with('(')
+                    {
+                        Some(k)
+                    } else {
+                        None
+                    }
+                });
 
         let paren_idx = match paren_token_index {
             Some(idx) => idx,
-            None => return Ok(i + 1),
+            None => {
+                self.context.disabled_macros.remove(name);
+                return Ok(params.i + 1);
+            }
         };
 
-        let (args, end_idx) = self.parse_macro_arguments(tokens, paren_idx, mac, ctx)?;
+        let (args, end_idx) = {
+            let parse_result =
+                self.parse_macro_arguments(params.tokens, paren_idx, mac, params.ctx);
+            match parse_result {
+                Ok(args) => args,
+                Err(e) => {
+                    self.context.disabled_macros.remove(name);
+                    return Err(e);
+                }
+            }
+        };
 
-        let substituted = self.replace_macro_parameters(mac, name, &args, depth + 1, ctx)?;
+        let substituted = {
+            let replace_result =
+                self.replace_macro_parameters(mac, name, &args, params.depth + 1, params.ctx);
+            match replace_result {
+                Ok(substituted) => substituted,
+                Err(e) => {
+                    self.context.disabled_macros.remove(name);
+                    return Err(e);
+                }
+            }
+        };
 
-        self.context.disabled_macros.insert(name.to_string());
         let pasted = engine::apply_token_pasting(&substituted);
-        let expanded_res = self.expand_tokens(&pasted, depth + 1, ctx);
+        let expanded_res = self.expand_tokens(&pasted, params.depth + 1, params.ctx);
+
+        // Clean up disabled_macros before returning or propagating error
         self.context.disabled_macros.remove(name);
 
         let expanded_tokens = expanded_res?;
-        out.extend(expanded_tokens);
+        params.out.extend(expanded_tokens);
 
         Ok(end_idx)
     }

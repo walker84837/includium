@@ -244,7 +244,7 @@ fn run() -> Result<()> {
     let start_time = Instant::now();
     let mut driver = includium::PreprocessorDriver::new();
     driver.apply_config(&config);
-    if cli.input != PathBuf::from("-") {
+    if cli.input.as_os_str() != "-" {
         driver.set_current_file(cli.input.to_string_lossy().to_string());
     }
     let processed_output = match driver.process(&input_content) {

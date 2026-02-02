@@ -738,8 +738,20 @@ pub fn line_splice(input: &str) -> String {
 }
 
 /// Check if we found _Pragma token at position i
-fn is_pragma_start(chars: &[char], i: usize) -> bool {
-    i + 7 <= chars.len() && chars[i..i + 7] == ['_', 'P', 'r', 'a', 'g', 'm', 'a']
+const fn is_pragma_start(chars: &[char], i: usize) -> bool {
+    if i + 7 > chars.len() {
+        return false;
+    }
+
+    let pragma_chars = ['_', 'P', 'r', 'a', 'g', 'm', 'a'];
+    let mut j = 0;
+    while j < 7 {
+        if chars[i + j] != pragma_chars[j] {
+            return false;
+        }
+        j += 1;
+    }
+    true
 }
 
 /// Skip whitespace to find opening parenthesis
@@ -917,18 +929,19 @@ fn is_valid_identifier(s: &str) -> bool {
 }
 
 /// Check if character can start an identifier
-fn is_identifier_start_char(ch: char) -> bool {
+const fn is_identifier_start_char(ch: char) -> bool {
     ch.is_ascii_alphabetic() || ch == '_'
 }
 
 /// Check if character can continue an identifier
-fn is_identifier_continue_char(ch: char) -> bool {
+const fn is_identifier_continue_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_'
 }
 
 /// Find the previous non-whitespace token index
 fn find_prev_non_whitespace_token(tokens: &[Token], end: usize) -> Option<usize> {
     let mut idx = if end == 0 { return None } else { Some(end - 1) };
+
     while let Some(current_idx) = idx {
         if !is_whitespace(&tokens[current_idx]) {
             return Some(current_idx);
