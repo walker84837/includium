@@ -59,6 +59,7 @@ pub use macro_def::Macro;
 // Re-export Preprocessor as alias to PreprocessorDriver for backward compatibility
 pub use PreprocessorDriver as Preprocessor;
 
+use std::fs;
 use std::path::Path;
 
 /// Preprocess C code with the given configuration.
@@ -86,9 +87,9 @@ pub fn process_file<P: AsRef<Path>>(
     output_path: P,
     config: &PreprocessorConfig,
 ) -> Result<(), PreprocessError> {
-    let input = std::fs::read_to_string(input_path)?;
+    let input = fs::read_to_string(input_path)?;
     let output = process(&input, config)?;
-    std::fs::write(output_path, output)?;
+    fs::write(output_path, output)?;
     Ok(())
 }
 
@@ -100,7 +101,7 @@ pub fn preprocess_c_file_to_string<P: AsRef<Path>>(
     input_path: P,
     config: &PreprocessorConfig,
 ) -> Result<String, PreprocessError> {
-    let input = std::fs::read_to_string(input_path)?;
+    let input = fs::read_to_string(input_path)?;
     process(&input, config)
 }
 
@@ -442,7 +443,8 @@ int var PASTE3(_,x,_) = 42;
         assert!(display.contains("malformed directive: define"));
 
         // Check error chaining for I/O errors
-        let io_error = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        use std::io;
+        let io_error = io::Error::new(io::ErrorKind::NotFound, "file not found");
         let wrapped_error = PreprocessError::io_error("test.c".to_string(), 10, io_error);
 
         // The source should be the underlying I/O error

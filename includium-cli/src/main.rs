@@ -8,6 +8,7 @@ use std::{
     fs,
     io::{self, prelude::*},
     path::{Path, PathBuf},
+    process,
     rc::Rc,
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
@@ -190,7 +191,7 @@ static WARNINGS_OCCURRED: AtomicBool = AtomicBool::new(false);
 
 /// Main application entry point
 fn main() {
-    std::process::exit(match run() {
+    process::exit(match run() {
         Ok(_) => {
             if WARNINGS_OCCURRED.load(Ordering::Relaxed) {
                 exit_code::GENERAL_ERROR
