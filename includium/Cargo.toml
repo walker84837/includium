@@ -1,6 +1,6 @@
 [package]
 name = "includium"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 description = "A complete C preprocessor implementation in Rust."
 license = "MPL-2.0"
