@@ -2,27 +2,38 @@
 #![warn(clippy::unwrap_used)]
 #![warn(clippy::expect_used)]
 
-//! # C Preprocessor Library
+//! # Includium - Complete C Preprocessor
 //!
-//! This library provides a complete C preprocessor implementation that can process
-//! C/C++ source code with macros, conditional compilation, and includes. It supports
-//! target-specific preprocessing for different operating systems and compilers.
+//! Includium is a C preprocessor implementation that processes C/C++ source code with
+//! advanced macro expansion, conditional compilation, and includes. It emulates the behavior
+//! of battle-tested C/C++ compilers (Clang and GCC mainly) on a best-effort basis while being
+//! standard-compliant.
+//!
+//! It supports target-specific preprocessing for different operating systems and compilers with
+//! advanced error reporting and exhaustive customization options.
 //!
 //! ## Features
 //!
-//! - Macro expansion (object-like and function-like macros)
-//! - Conditional compilation (`#ifdef`, `#ifndef`, `#if`, `#else`, `#elif`, `#endif`)
-//! - Include processing with custom resolvers
-//! - Target-specific macro definitions (Linux, Windows, macOS)
-//! - Compiler-specific macro definitions (GCC, Clang, MSVC)
-//! - C FFI for integration with other languages
+//! - **Complete macro expansion** with object-like and function-like macros
+//! - **Variadic macro support** with `__VA_ARGS__`
+//! - **Stringification** (`#`) and **token pasting** (`##`) operators
+//! - **Full conditional compilation** with nested `#if`, `#ifdef`, `#ifndef`, `#else`, `#elif`, `#endif` blocks
+//! - **Include processing** with custom resolvers and `#pragma once` support
+//! - **Predefined macros**: `__FILE__`, `__LINE__`, `__DATE__`, `__TIME__`
+//! - **Built-in compiler intrinsics** and sizeof stubs
+//! - **Target-specific preprocessing** for Linux, Windows, and macOS
+//! - **Compiler-specific macro definitions** (GCC, Clang, MSVC)
+//! - **Comprehensive error reporting** with location context and source line display
+//! - **Include cycle detection** and recursion protection
+//! - **Expression evaluation** with full operator precedence
+//! - **C FFI API** for integration with other languages
 //!
-//! ## Example
+//! ## Quick Start
 //!
 //! ```rust,no_run
 //! use includium::PreprocessorConfig;
 //!
-//! let code = r#"#
+//! let code = r#"
 //! #define PI 3.14
 //! #ifdef __linux__
 //! const char* platform = "Linux";
@@ -31,8 +42,144 @@
 //!
 //! let config = PreprocessorConfig::for_linux();
 //! let result = includium::process(code, &config).unwrap();
-//! //println!("{}", result);
+//! println!("{}", result);
 //! ```
+//!
+//! ## Advanced Usage
+//!
+//! The `PreprocessorDriver` provides full control over preprocessing:
+//!
+//! ```rust,no_run
+//! use includium::{PreprocessorDriver, PreprocessorConfig, Compiler};
+//! use std::rc::Rc;
+//!
+//! let mut pp = PreprocessorDriver::new()
+//!     .with_include_resolver(|path, kind, context| {
+//!         match path {
+//!             "config.h" => Some("#define CONFIG_ENABLED 1\n".to_string()),
+//!             "version.h" => Some("#define VERSION \"1.0.0\"\n".to_string()),
+//!             _ => None,
+//!         }
+//!     });
+//!
+//! // Apply configuration for Windows with MSVC
+//! let config = PreprocessorConfig::for_windows().with_compiler(Compiler::MSVC);
+//! pp.apply_config(&config);
+//!
+//! // Programmatic macro definition
+//! pp.define("DEBUG", None, "1", false);
+//! pp.define("SQUARE", Some(vec!["x".to_string()]), "((x) * (x))", false);
+//!
+//! let code = r#"
+//! #include "config.h"
+//! #ifdef DEBUG
+//! #define LOG(msg) printf("Debug: %s\n", msg)
+//! #else
+//! #define LOG(msg)
+//! #endif
+//!
+//! int result = SQUARE(5);
+//! LOG("Processing complete");
+//! "#;
+//!
+//! let result = pp.process(code).unwrap();
+//! println!("{}", result);
+//!
+//! // Macro introspection
+//! println!("Defined macros: {:?}", pp.get_macros().keys().collect::<Vec<_>>());
+//! ```
+//!
+//! ## Configuration
+//!
+//! Choose your target platform and compiler:
+//!
+//! ```rust,no_run
+//! # use std::rc::Rc;
+//! use includium::{PreprocessorConfig, Compiler};
+//!
+//! // Linux + GCC (default)
+//! let linux_config = PreprocessorConfig::for_linux();
+//!
+//! // Windows + MSVC
+//! let windows_config = PreprocessorConfig::for_windows().with_compiler(Compiler::MSVC);
+//!
+//! // macOS + Clang
+//! let macos_config = PreprocessorConfig::for_macos().with_compiler(Compiler::Clang);
+//!
+//! // Custom configuration with warning handler
+//! let warning_handler = Rc::new(|msg: &str| {
+//!     eprintln!("Warning: {}", msg);
+//! });
+//!
+//! let custom_config = PreprocessorConfig::for_linux()
+//!     .with_compiler(Compiler::GCC)
+//!     .with_warning_handler(warning_handler);
+//! ```
+//!
+//! ## Error Handling
+//!
+//! The preprocessor provides detailed error information with location context:
+//!
+//! ```rust,no_run
+//! use includium::PreprocessorConfig;
+//!
+//! let code = r#"
+//! #define
+//! int x = 1;
+//! "#;
+//!
+//! let result = includium::process(code, &PreprocessorConfig::default());
+//! match result {
+//!     Ok(output) => println!("{}", output),
+//!     Err(e) => {
+//!         eprintln!("Preprocessing error: {}", e);
+//!         // Error includes file, line, column, and source line context
+//!     }
+//! }
+//! ```
+//!
+//! ## Variadic Macros
+//!
+//! Support for variadic macros with `__VA_ARGS__`:
+//!
+//! ```rust,no_run
+//! use includium::PreprocessorConfig;
+//!
+//! let code = r#"
+//! #define LOG(fmt, ...) printf(fmt, __VA_ARGS__)
+//! #define DEBUG(...) printf("DEBUG: " __VA_ARGS__)
+//!
+//! LOG("Hello %s\n", "world");
+//! DEBUG("Processing item %d", 42);
+//! "#;
+//!
+//! let result = includium::process(code, &PreprocessorConfig::default()).unwrap();
+//! println!("{}", result);
+//! ```
+//!
+//! ## Stringification and Token Pasting
+//!
+//! ```rust,no_run
+//! use includium::PreprocessorConfig;
+//!
+//! let code = r#"
+//! #define STR(x) #x
+//! #define PASTE(a, b) a##b
+//! #define MAKE_VAR(name, type) type PASTE(var_, name)
+//!
+//! const char* file = STR(__FILE__);
+//! int x1 = PASTE(x, 1);
+//! MAKE_VAR(count, int) = 42;
+//! "#;
+//!
+//! let result = includium::process(code, &PreprocessorConfig::default()).unwrap();
+//! println!("{}", result);
+//! ```
+//!
+//! ## C API
+//!
+//! Includium also provides a C FFI API for integration with other languages.
+//! See the `c_api` module for available C functions.
 
 mod c_api;
 mod config;
