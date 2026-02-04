@@ -3,8 +3,8 @@
 #include "../include/c_preprocessor.h"
 
 int main() {
-    // Create preprocessor
-    CPreprocessor* pp = c_preprocessor_new();
+    // Create preprocessor with default config (null = defaults)
+    PreprocessorDriver* pp = includium_new(NULL);
     if (!pp) {
         fprintf(stderr, "Failed to create preprocessor\n");
         return 1;
@@ -17,15 +17,15 @@ int main() {
                         "int y = ADD(1, 2);\n";
 
     // Process
-    char* result = c_preprocessor_process(pp, input);
+    char* result = includium_process(pp, input);
     if (result) {
         printf("Preprocessed output:\n%s\n", result);
-        c_preprocessor_free_result(result);
+        includium_free_result(result);
     } else {
         fprintf(stderr, "Preprocessing failed\n");
     }
 
     // Clean up
-    c_preprocessor_free(pp);
+    includium_free(pp);
     return 0;
 }
