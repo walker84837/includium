@@ -1,7 +1,12 @@
+use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::ptr;
 use std::rc::Rc;
+
+thread_local! {
+    static LAST_ERROR: RefCell<Option<CString>> = RefCell::new(None);
+}
 
 use crate::config::{Compiler, PreprocessorConfig, Target};
 use crate::driver::PreprocessorDriver;
@@ -23,6 +28,13 @@ pub struct includium_config {
 /// Typedef for includium_config
 #[allow(non_camel_case_types)]
 pub type includium_config_t = includium_config;
+
+/// Set the last error message for C API error reporting
+fn set_last_error(message: &str) {
+    LAST_ERROR.with(|error| {
+        *error.borrow_mut() = CString::new(message).ok();
+    });
+}
 
 /// Convert C config to Rust config with validation
 fn preprocessor_config_from_c(
@@ -77,8 +89,20 @@ pub unsafe extern "C" fn includium_new(
         let c_config = unsafe { &*config };
         match preprocessor_config_from_c(c_config) {
             Ok(rust_config) => driver.apply_config(&rust_config),
-            Err(_) => return ptr::null_mut(), // Invalid config
+            Err(e) => {
+                set_last_error(e);
+                return ptr::null_mut(); // Invalid config
+            }
         }
+    }
+
+    /// Get the last error message from the C API
+    ///
+    /// # Safety
+    /// The returned string is valid until the next C API call that sets an error.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn includium_last_error() -> *const c_char {
+        LAST_ERROR.with(|error| error.borrow().as_ref().map_or(ptr::null(), |s| s.as_ptr()))
     }
     Box::into_raw(Box::new(driver))
 }
@@ -111,14 +135,26 @@ pub unsafe extern "C" fn includium_process(
         return ptr::null_mut();
     }
 
-    let input_str = unsafe { CStr::from_ptr(input).to_str().unwrap_or("") };
+    let input_str = match unsafe { CStr::from_ptr(input).to_str() } {
+        Ok(s) => s,
+        Err(_) => {
+            set_last_error("Invalid UTF-8 input");
+            return ptr::null_mut(); // Invalid UTF-8 input
+        }
+    };
     let driver = unsafe { &mut *pp };
     match driver.process(input_str) {
         Ok(result) => match CString::new(result) {
             Ok(cstr) => cstr.into_raw(),
-            Err(_) => ptr::null_mut(),
+            Err(_) => {
+                set_last_error("Result contains invalid UTF-8");
+                ptr::null_mut()
+            }
         },
-        Err(_) => ptr::null_mut(),
+        Err(e) => {
+            set_last_error(&format!("Processing error: {}", e));
+            ptr::null_mut()
+        }
     }
 }
 
