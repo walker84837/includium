@@ -3,7 +3,7 @@
 
 int main() {
   // Create preprocessor with default config (null = defaults)
-  PreprocessorDriver *pp = includium_new(NULL);
+  includium_ctx *pp = includium_new(NULL);
   if (!pp) {
     fprintf(stderr, "Failed to create preprocessor\n");
     return 1;
