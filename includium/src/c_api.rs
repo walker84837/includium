@@ -1,10 +1,19 @@
+use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::ptr;
 use std::rc::Rc;
 
+thread_local! {
+    static LAST_ERROR: RefCell<Option<CString>> = RefCell::new(None);
+}
+
 use crate::config::{Compiler, PreprocessorConfig, Target};
 use crate::driver::PreprocessorDriver;
+
+/// Opaque C handle. Thin wrapper - all logic lives in PreprocessorDriver.
+#[repr(C)]
+pub struct includium_ctx(PreprocessorDriver);
 
 /// C-friendly configuration struct for the preprocessor
 #[repr(C)]
@@ -23,6 +32,13 @@ pub struct includium_config {
 /// Typedef for includium_config
 #[allow(non_camel_case_types)]
 pub type includium_config_t = includium_config;
+
+/// Set the last error message for C API error reporting
+fn set_last_error(message: &str) {
+    LAST_ERROR.with(|error| {
+        *error.borrow_mut() = CString::new(message).ok();
+    });
+}
 
 /// Convert C config to Rust config with validation
 fn preprocessor_config_from_c(
@@ -69,18 +85,28 @@ fn preprocessor_config_from_c(
 /// This function is safe to call from C code.
 /// If config is null, uses default configuration.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn includium_new(
-    config: *const includium_config_t,
-) -> *mut PreprocessorDriver {
+pub unsafe extern "C" fn includium_new(config: *const includium_config_t) -> *mut includium_ctx {
     let mut driver = PreprocessorDriver::new();
     if !config.is_null() {
         let c_config = unsafe { &*config };
         match preprocessor_config_from_c(c_config) {
             Ok(rust_config) => driver.apply_config(&rust_config),
-            Err(_) => return ptr::null_mut(), // Invalid config
+            Err(e) => {
+                set_last_error(e);
+                return ptr::null_mut();
+            }
         }
     }
-    Box::into_raw(Box::new(driver))
+    Box::into_raw(Box::new(includium_ctx(driver)))
+}
+
+/// Get the last error message from the C API
+///
+/// # Safety
+/// The returned string is valid until the next C API call that sets an error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn includium_last_error() -> *const c_char {
+    LAST_ERROR.with(|error| error.borrow().as_ref().map_or(ptr::null(), |s| s.as_ptr()))
 }
 
 /// Free a preprocessor instance created by C API
@@ -88,10 +114,10 @@ pub unsafe extern "C" fn includium_new(
 /// # Safety
 /// The pointer must have been created by `includium_new` and not already freed.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn includium_free(pp: *mut PreprocessorDriver) {
-    if !pp.is_null() {
+pub unsafe extern "C" fn includium_free(ctx: *mut includium_ctx) {
+    if !ctx.is_null() {
         unsafe {
-            drop(Box::from_raw(pp));
+            drop(Box::from_raw(ctx));
         }
     }
 }
@@ -104,21 +130,33 @@ pub unsafe extern "C" fn includium_free(pp: *mut PreprocessorDriver) {
 /// - The returned string must be freed with `includium_free_result`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn includium_process(
-    pp: *mut PreprocessorDriver,
+    ctx: *mut includium_ctx,
     input: *const c_char,
 ) -> *mut c_char {
-    if pp.is_null() || input.is_null() {
+    if ctx.is_null() || input.is_null() {
         return ptr::null_mut();
     }
 
-    let input_str = unsafe { CStr::from_ptr(input).to_str().unwrap_or("") };
-    let driver = unsafe { &mut *pp };
+    let input_str = match unsafe { CStr::from_ptr(input).to_str() } {
+        Ok(s) => s,
+        Err(_) => {
+            set_last_error("Invalid UTF-8 input");
+            return ptr::null_mut();
+        }
+    };
+    let driver = unsafe { &mut (*ctx).0 };
     match driver.process(input_str) {
         Ok(result) => match CString::new(result) {
             Ok(cstr) => cstr.into_raw(),
-            Err(_) => ptr::null_mut(),
+            Err(_) => {
+                set_last_error("Result contains invalid UTF-8");
+                ptr::null_mut()
+            }
         },
-        Err(_) => ptr::null_mut(),
+        Err(e) => {
+            set_last_error(&format!("Processing error: {}", e));
+            ptr::null_mut()
+        }
     }
 }
 
