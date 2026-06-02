@@ -499,8 +499,10 @@ impl PreprocessorDriver {
             },
         };
 
-        let processed = nested.process(&content)?;
+        let process_result = nested.process(&content);
         self.context.include_stack.pop();
+
+        let processed = process_result?;
         self.context.macros = nested.context.macros;
 
         if content.contains("#pragma once") {
@@ -1042,6 +1044,14 @@ impl PreprocessorDriver {
             match body_t {
                 // # param stringification
                 Token::Other(s) if s.trim() == "#" => {
+                    // Skip whitespace between # and parameter name per C standard
+                    while let Some((_, next)) = body_iter.peek() {
+                        if matches!(next, Token::Other(ws) if ws.chars().all(char::is_whitespace)) {
+                            body_iter.next();
+                        } else {
+                            break;
+                        }
+                    }
                     if let Some((_, Token::Identifier(id))) = body_iter.peek()
                         && let Some(pos) = is_param(id)
                     {

@@ -438,12 +438,12 @@ where
             ExprToken::ShiftLeft => {
                 *pos += 1;
                 let right = parse_additive(tokens, pos, is_defined)?;
-                left <<= right;
+                left = left.wrapping_shl(right as u32);
             }
             ExprToken::ShiftRight => {
                 *pos += 1;
                 let right = parse_additive(tokens, pos, is_defined)?;
-                left >>= right;
+                left = left.wrapping_shr(right as u32);
             }
             _ => break,
         }
@@ -461,12 +461,12 @@ where
             ExprToken::Plus => {
                 *pos += 1;
                 let right = parse_multiplicative(tokens, pos, is_defined)?;
-                left += right;
+                left = left.wrapping_add(right);
             }
             ExprToken::Minus => {
                 *pos += 1;
                 let right = parse_multiplicative(tokens, pos, is_defined)?;
-                left -= right;
+                left = left.wrapping_sub(right);
             }
             _ => break,
         }
@@ -488,7 +488,7 @@ where
             ExprToken::Multiply => {
                 *pos += 1;
                 let right = parse_unary(tokens, pos, is_defined)?;
-                left *= right;
+                left = left.wrapping_mul(right);
             }
             ExprToken::Divide => {
                 *pos += 1;
@@ -496,7 +496,7 @@ where
                 if right == 0 {
                     return Err("Division by zero".to_string());
                 }
-                left /= right;
+                left = left.wrapping_div(right);
             }
             ExprToken::Modulo => {
                 *pos += 1;
@@ -504,7 +504,7 @@ where
                 if right == 0 {
                     return Err("Modulo by zero".to_string());
                 }
-                left %= right;
+                left = left.wrapping_rem(right);
             }
             _ => break,
         }
@@ -531,7 +531,7 @@ where
             ExprToken::Minus => {
                 *pos += 1;
                 let expr = parse_unary(tokens, pos, is_defined)?;
-                return Ok(-expr);
+                return Ok(expr.wrapping_neg());
             }
             ExprToken::Plus => {
                 *pos += 1;
