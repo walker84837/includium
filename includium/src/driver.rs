@@ -206,7 +206,8 @@ impl PreprocessorDriver {
     /// Returns `PreprocessError` if there's a malformed directive,
     /// macro recursion limit is exceeded, or conditional blocks are unterminated.
     pub fn process(&mut self, input: &str) -> Result<String, PreprocessError> {
-        let spliced = engine::line_splice(input);
+        let normalized = engine::normalize_input(input);
+        let spliced = engine::line_splice(&normalized);
         let pragma_processed = engine::process_pragma(&spliced);
         let mut out_lines: Vec<String> = Vec::new();
         self.context.conditional_stack.clear();
@@ -220,10 +221,12 @@ impl PreprocessorDriver {
                 Some(current_line_str.to_string()),
             );
 
-            if let Some(directive) = Self::extract_directive(&stripped_line)
-                && let Some(content) = self.handle_directive(directive, &ctx)?
-            {
-                out_lines.push(content);
+            if let Some(directive) = Self::extract_directive(&stripped_line) {
+                // Line is a directive - handle it and never emit the raw text,
+                // even when the directive produces no output (e.g. #define, #undef).
+                if let Some(content) = self.handle_directive(directive, &ctx)? {
+                    out_lines.push(content);
+                }
             } else if self.can_emit_line() {
                 let tokens = engine::tokenize_line(&stripped_line);
                 let expanded_tokens = self.expand_tokens(&tokens, 0, &ctx)?;
@@ -238,7 +241,18 @@ impl PreprocessorDriver {
             return Err(self.conditional_error("unterminated #if/#ifdef/#ifndef", &ctx));
         }
 
-        Ok(out_lines.join("\n") + "\n")
+        let result = out_lines.join("\n") + "\n";
+
+        // Only denormalize at the outer-most call to avoid corrupting internal data flow
+        // (nested includes pass strings back to the parent through `handle_include`).
+        if self.context.include_stack.is_empty() {
+            Ok(engine::denormalize_output(
+                &result,
+                &self.context.line_ending,
+            ))
+        } else {
+            Ok(result)
+        }
     }
 
     /// Checks if the current line should be emitted in the output based on the active
@@ -455,7 +469,7 @@ impl PreprocessorDriver {
 
         // Check for cycles
         if self.context.include_stack.contains(&p) {
-            return Err(self.generic_error(&format!("Include cycle detected for '{}'", p), ctx));
+            return Err(self.generic_error(&format!("Include cycle detected for '{p}'"), ctx));
         }
 
         // Check for #pragma once
@@ -477,8 +491,10 @@ impl PreprocessorDriver {
                 .and_then(|including_file| Path::new(including_file).parent())
                 .map(|parent_dir| parent_dir.join(&p))
                 .filter(|candidate| candidate.exists())
-                .map(|candidate| candidate.to_string_lossy().to_string())
-                .unwrap_or_else(|| p.clone())
+                .map_or_else(
+                    || p.clone(),
+                    |candidate| candidate.to_string_lossy().to_string(),
+                )
         } else {
             p.clone()
         };
@@ -496,6 +512,7 @@ impl PreprocessorDriver {
                 current_file: resolved_path,
                 compiler: self.context.compiler.clone(),
                 warning_handler: self.context.warning_handler.clone(),
+                line_ending: self.context.line_ending.clone(),
             },
         };
 
@@ -906,12 +923,9 @@ impl PreprocessorDriver {
                     }
                 });
 
-        let paren_idx = match paren_token_index {
-            Some(idx) => idx,
-            None => {
-                self.context.disabled_macros.remove(name);
-                return Ok(params.i + 1);
-            }
+        let Some(paren_idx) = paren_token_index else {
+            self.context.disabled_macros.remove(name);
+            return Ok(params.i + 1);
         };
 
         let (args, end_idx) = {
@@ -1022,9 +1036,8 @@ impl PreprocessorDriver {
         depth: usize,
         ctx: &DiagnosticContext,
     ) -> Result<Vec<Token>, PreprocessError> {
-        let params_list = match &mac.params {
-            Some(p) => p,
-            None => return Ok(mac.body.as_ref().clone()),
+        let Some(params_list) = &mac.params else {
+            return Ok(mac.body.as_ref().clone());
         };
 
         let mut replaced = Vec::with_capacity(mac.body.len());

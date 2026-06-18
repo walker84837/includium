@@ -192,7 +192,7 @@ mod macro_def;
 mod token;
 
 pub use config::{
-    Compiler, IncludeContext, IncludeKind, IncludeResolver, PreprocessorConfig, Target,
+    Compiler, IncludeContext, IncludeKind, IncludeResolver, LineEnding, PreprocessorConfig, Target,
     WarningHandler,
 };
 pub use context::PreprocessorContext;
@@ -1478,5 +1478,98 @@ FRESH_MACRO
         let mut pp2 = Preprocessor::new();
         let out2 = pp2.process(src2).unwrap();
         assert!(out2.contains("fresh_value"));
+    }
+
+    // -- Line ending and BOM normalization tests --
+
+    #[test]
+    fn normalize_input_removes_bom() {
+        let bom = "\u{FEFF}";
+        let input = format!("{bom}#define A 1\nA\n");
+        let result = engine::normalize_input(&input);
+        assert_eq!(result, "#define A 1\nA\n");
+    }
+
+    #[test]
+    fn normalize_input_converts_crlf() {
+        let input = "#define A 1\r\nA\r\n";
+        let result = engine::normalize_input(input);
+        assert_eq!(result, "#define A 1\nA\n");
+    }
+
+    #[test]
+    fn normalize_input_converts_bare_cr() {
+        let input = "#define A 1\rA\r";
+        let result = engine::normalize_input(input);
+        assert_eq!(result, "#define A 1\nA\n");
+    }
+
+    #[test]
+    fn normalize_input_mixed_endings() {
+        let input = "a\nb\r\nc\r";
+        let result = engine::normalize_input(input);
+        assert_eq!(result, "a\nb\nc\n");
+    }
+
+    #[test]
+    fn normalize_input_no_change_for_lf() {
+        let input = "#define A 1\nA\n";
+        let result = engine::normalize_input(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn denormalize_output_to_crlf() {
+        let input = "a\nb\nc\n";
+        let result = engine::denormalize_output(input, &LineEnding::CRLF);
+        assert_eq!(result, "a\r\nb\r\nc\r\n");
+    }
+
+    #[test]
+    fn denormalize_output_to_cr() {
+        let input = "a\nb\nc\n";
+        let result = engine::denormalize_output(input, &LineEnding::CR);
+        assert_eq!(result, "a\rb\rc\r");
+    }
+
+    #[test]
+    fn denormalize_output_lf_is_noop() {
+        let input = "a\nb\nc\n";
+        let result = engine::denormalize_output(input, &LineEnding::LF);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn crlf_input_lf_output_default_passes() {
+        let input = "#define A 1\r\nA\r\n";
+        let mut pp = Preprocessor::new();
+        let out = pp.process(input).unwrap();
+        // Default is LF, so output should use \n; only the expanded A line is emitted
+        assert_eq!(out, "1\n");
+    }
+
+    #[test]
+    fn crlf_input_crlf_output_from_config() {
+        let input = "#define A 1\r\nA\r\n";
+        let config = PreprocessorConfig::for_linux().with_line_ending(LineEnding::CRLF);
+        let mut pp = PreprocessorDriver::with_config(&config);
+        let out = pp.process(input).unwrap();
+        assert_eq!(out, "1\r\n");
+    }
+
+    #[test]
+    fn cr_input_lf_output_default() {
+        let input = "#define A 1\rA\r";
+        let mut pp = Preprocessor::new();
+        let out = pp.process(input).unwrap();
+        assert_eq!(out, "1\n");
+    }
+
+    #[test]
+    fn bom_stripped_from_input() {
+        let input = "\u{FEFF}#define A 1\nA\n";
+        let mut pp = Preprocessor::new();
+        let out = pp.process(input).unwrap();
+        assert_eq!(out, "1\n");
     }
 }

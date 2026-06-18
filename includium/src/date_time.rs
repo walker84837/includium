@@ -74,7 +74,7 @@ pub fn format_time() -> String {
     let minutes = ((seconds_today % 3600) / 60) as u32;
     let seconds = (seconds_today % 60) as u32;
 
-    format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+    format!("{hours:02}:{minutes:02}:{seconds:02}")
 }
 
 const fn is_leap_year(year: u64) -> bool {

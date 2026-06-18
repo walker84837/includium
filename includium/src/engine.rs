@@ -1,6 +1,7 @@
 use std::iter::Peekable;
 use std::str::Chars;
 
+use crate::config::LineEnding;
 use crate::context::PreprocessorContext;
 use crate::error::PreprocessError;
 use crate::token::{ExprToken, Token, is_identifier_continue, is_identifier_start};
@@ -698,6 +699,28 @@ pub fn strip_comments(input: &str) -> String {
     result
 }
 
+/// Normalize input by stripping UTF-8 BOM and converting all line endings to `\n`.
+///
+/// This handles CRLF (`\r\n`), bare CR (`\r`), and bare LF (`\n`), producing
+/// a uniform `\n`-separated string for consistent downstream processing.
+pub fn normalize_input(input: &str) -> String {
+    let input = input.strip_prefix('\u{FEFF}').unwrap_or(input);
+    input.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+/// Convert `\n` in output to the configured line ending style.
+///
+/// The input is expected to be `\n`-separated (as produced by `normalize_input`
+/// and all internal processing). This function replaces each `\n` with the
+/// chosen output ending.
+pub fn denormalize_output(input: &str, ending: &LineEnding) -> String {
+    match ending {
+        LineEnding::LF => input.to_string(),
+        LineEnding::CRLF => input.replace('\n', "\r\n"),
+        LineEnding::CR => input.replace('\n', "\r"),
+    }
+}
+
 /// Perform line splicing (join lines ending with backslash)
 pub fn line_splice(input: &str) -> String {
     if !input.contains('\\') {
@@ -789,9 +812,8 @@ fn parse_pragma_string(chars: &[char], start: usize) -> Option<(String, usize)> 
                 // End of string
                 j += 1;
                 return Some((string_content, j));
-            } else {
-                string_content.push(chars[j]);
             }
+            string_content.push(chars[j]);
         } else {
             string_content.push(chars[j]);
         }

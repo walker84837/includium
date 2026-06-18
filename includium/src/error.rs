@@ -142,22 +142,22 @@ impl fmt::Display for PreprocessError {
 
         let message = match &self.kind {
             PreprocessErrorKind::IncludeNotFound(path) => {
-                format!("include not found: {}", path)
+                format!("include not found: {path}")
             }
             PreprocessErrorKind::MalformedDirective(directive) => {
-                format!("malformed directive: {}", directive)
+                format!("malformed directive: {directive}")
             }
             PreprocessErrorKind::MacroArgMismatch(details) => {
-                format!("macro argument mismatch: {}", details)
+                format!("macro argument mismatch: {details}")
             }
             PreprocessErrorKind::RecursionLimitExceeded(details) => {
-                format!("recursion limit exceeded: {}", details)
+                format!("recursion limit exceeded: {details}")
             }
             PreprocessErrorKind::ConditionalError(details) => {
-                format!("conditional error: {}", details)
+                format!("conditional error: {details}")
             }
             PreprocessErrorKind::Io(err) => {
-                format!("I/O error: {}", err)
+                format!("I/O error: {err}")
             }
             PreprocessErrorKind::Other(msg) => msg.clone(),
         };
@@ -166,22 +166,22 @@ impl fmt::Display for PreprocessError {
             // For internal/synthetic locations, show brief error with context for maintainers
             write!(
                 f,
-                "preprocessor error ({}:{}): {}",
-                self.file, self.line, message
+                "preprocessor error ({}:{}): {message}",
+                self.file, self.line
             )?;
         } else {
             let loc = if let Some(col) = self.column {
-                format!("{}:{}:{}", self.file, self.line, col)
+                format!("{}:{}:{col}", self.file, self.line)
             } else {
                 format!("{}:{}", self.file, self.line)
             };
-            write!(f, "{}: {}", loc, message)?;
+            write!(f, "{loc}: {message}")?;
         }
 
         if let (Some(col), Some(source_line)) = (self.column, &self.source_line) {
-            write!(f, "\n{}\n", source_line)?;
+            write!(f, "\n{source_line}\n")?;
             let indent = " ".repeat(col.saturating_sub(1));
-            write!(f, "{}^", indent)?;
+            write!(f, "{indent}^")?;
         }
 
         Ok(())

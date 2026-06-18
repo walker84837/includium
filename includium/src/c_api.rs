@@ -8,10 +8,10 @@ thread_local! {
     static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
 }
 
-use crate::config::{Compiler, PreprocessorConfig, Target};
+use crate::config::{Compiler, LineEnding, PreprocessorConfig, Target};
 use crate::driver::PreprocessorDriver;
 
-/// Opaque C handle. Thin wrapper - all logic lives in PreprocessorDriver.
+/// Opaque C handle. Thin wrapper - all logic lives in `PreprocessorDriver`.
 #[repr(C)]
 pub struct includium_ctx(PreprocessorDriver);
 
@@ -29,7 +29,7 @@ pub struct includium_config {
     pub warning_handler: Option<extern "C" fn(*const c_char)>,
 }
 
-/// Typedef for includium_config
+/// Typedef for `includium_config`
 #[allow(non_camel_case_types)]
 pub type includium_config_t = includium_config;
 
@@ -65,13 +65,11 @@ fn preprocessor_config_from_c(
         recursion_limit: config.recursion_limit,
         include_resolver: None,
         warning_handler: None,
+        line_ending: LineEnding::LF,
     };
     if let Some(handler) = config.warning_handler {
         let handler_rc = Rc::new(move |msg: &str| {
-            let c_msg = match CString::new(msg) {
-                Ok(s) => s,
-                Err(_) => return,
-            };
+            let Ok(c_msg) = CString::new(msg) else { return };
             handler(c_msg.as_ptr());
         });
         rust_config.warning_handler = Some(handler_rc);
@@ -137,24 +135,22 @@ pub unsafe extern "C" fn includium_process(
         return ptr::null_mut();
     }
 
-    let input_str = match unsafe { CStr::from_ptr(input).to_str() } {
-        Ok(s) => s,
-        Err(_) => {
-            set_last_error("Invalid UTF-8 input");
-            return ptr::null_mut();
-        }
+    let Ok(input_str) = (unsafe { CStr::from_ptr(input).to_str() }) else {
+        set_last_error("Invalid UTF-8 input");
+        return ptr::null_mut();
     };
     let driver = unsafe { &mut (*ctx).0 };
     match driver.process(input_str) {
-        Ok(result) => match CString::new(result) {
-            Ok(cstr) => cstr.into_raw(),
-            Err(_) => {
+        Ok(result) => {
+            if let Ok(cstr) = CString::new(result) {
+                cstr.into_raw()
+            } else {
                 set_last_error("Result contains invalid UTF-8");
                 ptr::null_mut()
             }
-        },
+        }
         Err(e) => {
-            set_last_error(&format!("Processing error: {}", e));
+            set_last_error(&format!("Processing error: {e}"));
             ptr::null_mut()
         }
     }

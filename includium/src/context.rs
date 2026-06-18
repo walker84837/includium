@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::config::{Compiler, IncludeResolver, Target, WarningHandler};
+use crate::config::{Compiler, IncludeResolver, LineEnding, Target, WarningHandler};
 use crate::macro_def::Macro;
 
 use crate::{PreprocessorConfig, engine};
@@ -62,6 +62,9 @@ pub struct PreprocessorContext {
 
     /// Optional warning handler for #warning directives
     pub warning_handler: Option<WarningHandler>,
+
+    /// Line ending style for output denormalization
+    pub line_ending: LineEnding,
 }
 
 impl Default for PreprocessorContext {
@@ -86,6 +89,7 @@ impl PreprocessorContext {
             recursion_limit: 128,
             compiler: Compiler::GCC,
             warning_handler: None,
+            line_ending: LineEnding::LF,
         }
     }
 
@@ -95,6 +99,7 @@ impl PreprocessorContext {
         self.recursion_limit = config.recursion_limit;
         self.include_resolver.clone_from(&config.include_resolver);
         self.warning_handler.clone_from(&config.warning_handler);
+        self.line_ending = config.line_ending.clone();
 
         self.define_target_macros(&config.target);
         self.define_compiler_macros(&config.compiler);

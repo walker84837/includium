@@ -35,6 +35,18 @@ pub enum Target {
     MacOS,
 }
 
+/// Line ending style for output
+#[derive(Clone, Debug, Default)]
+pub enum LineEnding {
+    /// Line Feed (`\n`) - Unix, Linux, macOS
+    #[default]
+    LF,
+    /// Carriage Return + Line Feed (`\r\n`) - Windows
+    CRLF,
+    /// Carriage Return (`\r`) - classic Mac (pre-OS X)
+    CR,
+}
+
 /// Compiler dialect for preprocessing
 #[derive(Clone, Debug)]
 pub enum Compiler {
@@ -58,6 +70,8 @@ pub struct PreprocessorConfig {
     pub include_resolver: Option<IncludeResolver>,
     /// Optional warning handler for #warning directives
     pub warning_handler: Option<WarningHandler>,
+    /// Line ending style for output
+    pub line_ending: LineEnding,
 }
 
 impl Default for PreprocessorConfig {
@@ -76,6 +90,7 @@ impl PreprocessorConfig {
             recursion_limit: 128,
             include_resolver: None,
             warning_handler: None,
+            line_ending: LineEnding::LF,
         }
     }
 
@@ -88,6 +103,7 @@ impl PreprocessorConfig {
             recursion_limit: 128,
             include_resolver: None,
             warning_handler: None,
+            line_ending: LineEnding::CRLF,
         }
     }
 
@@ -100,6 +116,7 @@ impl PreprocessorConfig {
             recursion_limit: 128,
             include_resolver: None,
             warning_handler: None,
+            line_ending: LineEnding::LF,
         }
     }
 
@@ -114,6 +131,13 @@ impl PreprocessorConfig {
     #[must_use]
     pub fn with_warning_handler(mut self, handler: WarningHandler) -> Self {
         self.warning_handler = Some(handler);
+        self
+    }
+
+    /// Set the line ending style for output
+    #[must_use]
+    pub const fn with_line_ending(mut self, ending: LineEnding) -> Self {
+        self.line_ending = ending;
         self
     }
 }
