@@ -20,6 +20,7 @@ pub(crate) enum Token {
 pub(crate) enum ExprToken {
     Number(i64),
     Identifier(String),
+    StringLiteral(String),
     LParen,
     RParen,
     Not,

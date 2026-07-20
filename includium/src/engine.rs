@@ -242,6 +242,14 @@ pub fn tokenize_expression(expr: &str) -> Result<Vec<ExprToken>, PreprocessError
         let token = match ch {
             '0'..='9' => parse_number(ch, &mut chars)?,
             'a'..='z' | 'A'..='Z' | '_' => parse_expression_identifier(ch, &mut chars),
+            '"' => parse_expression_string(ch, &mut chars)?,
+            '<' => {
+                if let Some(header) = try_parse_header_bracket(ch, &mut chars) {
+                    ExprToken::Identifier(header)
+                } else {
+                    parse_two_char_operator(ch, &mut chars)?
+                }
+            }
             '(' => ExprToken::LParen,
             ')' => ExprToken::RParen,
             '~' => ExprToken::BitNot,
@@ -252,7 +260,7 @@ pub fn tokenize_expression(expr: &str) -> Result<Vec<ExprToken>, PreprocessError
             '/' => ExprToken::Divide,
             '%' => ExprToken::Modulo,
             c if c.is_whitespace() => continue,
-            '!' | '=' | '<' | '>' | '&' | '|' => parse_two_char_operator(ch, &mut chars)?,
+            '!' | '=' | '>' | '&' | '|' => parse_two_char_operator(ch, &mut chars)?,
             _ => {
                 return Err(PreprocessError::other(
                     "<expression>".to_string(),
@@ -267,32 +275,104 @@ pub fn tokenize_expression(expr: &str) -> Result<Vec<ExprToken>, PreprocessError
     Ok(tokens)
 }
 
+/// Parse a string literal (used for `__has_include("header")` arguments)
+fn parse_expression_string(
+    quote: char,
+    chars: &mut Peekable<Chars>,
+) -> Result<ExprToken, PreprocessError> {
+    let mut s = String::new();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(next) = chars.next() {
+                s.push('\\');
+                s.push(next);
+            }
+        } else if c == quote {
+            return Ok(ExprToken::StringLiteral(s));
+        } else {
+            s.push(c);
+        }
+    }
+    Err(PreprocessError::other(
+        "<expression>".to_string(),
+        0,
+        "Unterminated string literal in expression".to_string(),
+    ))
+}
+
+/// Attempt to parse a `<header>` argument (as used by `__has_include(<...>)`).
+///
+/// This is only a header bracket if the content is a contiguous, whitespace-free
+/// path-like sequence terminated by `>`. Otherwise (e.g. `a < b`) it is not a
+/// header and `None` is returned so the `<` can be treated as the less-than
+/// operator instead.
+fn try_parse_header_bracket(open: char, chars: &mut Peekable<Chars>) -> Option<String> {
+    debug_assert_eq!(open, '<');
+    let mut peek = chars.clone();
+    let mut content = String::from('<');
+    while let Some(c) = peek.next() {
+        if c == '>' {
+            content.push('>');
+            *chars = peek;
+            return Some(content);
+        }
+        // Reject anything that would make this look like an operator/comparison
+        // rather than a header name (whitespace, quotes, etc.).
+        if c.is_whitespace() || c == '"' || c == '\'' {
+            return None;
+        }
+        content.push(c);
+    }
+    None
+}
+
 /// Evaluate a preprocessor expression from tokens
 ///
 /// # Errors
 /// Returns an error message if the expression is malformed.
-pub fn evaluate_expression_tokens<F>(tokens: &[ExprToken], is_defined: F) -> Result<i64, String>
+pub fn evaluate_expression_tokens<F, G, H>(
+    tokens: &[ExprToken],
+    is_defined: F,
+    has_include: G,
+    has_include_next: H,
+) -> Result<i64, String>
 where
     F: Fn(&str) -> bool,
+    G: Fn(&str) -> bool,
+    H: Fn(&str) -> bool,
 {
     let mut pos = 0;
-    let result = parse_or(tokens, &mut pos, &is_defined)?;
+    let result = parse_or(
+        tokens,
+        &mut pos,
+        &is_defined,
+        &has_include,
+        &has_include_next,
+    )?;
     if pos != tokens.len() {
         return Err("Unexpected tokens at end of expression".to_string());
     }
     Ok(result)
 }
 
-fn parse_or<F>(tokens: &[ExprToken], pos: &mut usize, is_defined: &F) -> Result<i64, String>
+fn parse_or<F, G, H>(
+    tokens: &[ExprToken],
+    pos: &mut usize,
+    is_defined: &F,
+    has_include: &G,
+    has_include_next: &H,
+) -> Result<i64, String>
 where
     F: Fn(&str) -> bool,
+    G: Fn(&str) -> bool,
+    H: Fn(&str) -> bool,
 {
-    let mut left = parse_and(tokens, pos, is_defined)?;
+    let mut left = parse_and(tokens, pos, is_defined, has_include, has_include_next)?;
     while *pos < tokens.len() {
         match tokens[*pos] {
             ExprToken::Or => {
                 *pos += 1;
-                let right = parse_and(tokens, pos, is_defined)?;
+                let right = parse_and(tokens, pos, is_defined, has_include, has_include_next)?;
                 left = i64::from(left != 0 || right != 0);
             }
             _ => break,
@@ -301,16 +381,24 @@ where
     Ok(left)
 }
 
-fn parse_and<F>(tokens: &[ExprToken], pos: &mut usize, is_defined: &F) -> Result<i64, String>
+fn parse_and<F, G, H>(
+    tokens: &[ExprToken],
+    pos: &mut usize,
+    is_defined: &F,
+    has_include: &G,
+    has_include_next: &H,
+) -> Result<i64, String>
 where
     F: Fn(&str) -> bool,
+    G: Fn(&str) -> bool,
+    H: Fn(&str) -> bool,
 {
-    let mut left = parse_bit_or(tokens, pos, is_defined)?;
+    let mut left = parse_bit_or(tokens, pos, is_defined, has_include, has_include_next)?;
     while *pos < tokens.len() {
         match tokens[*pos] {
             ExprToken::And => {
                 *pos += 1;
-                let right = parse_bit_or(tokens, pos, is_defined)?;
+                let right = parse_bit_or(tokens, pos, is_defined, has_include, has_include_next)?;
                 left = i64::from(left != 0 && right != 0);
             }
             _ => break,
@@ -319,16 +407,24 @@ where
     Ok(left)
 }
 
-fn parse_bit_or<F>(tokens: &[ExprToken], pos: &mut usize, is_defined: &F) -> Result<i64, String>
+fn parse_bit_or<F, G, H>(
+    tokens: &[ExprToken],
+    pos: &mut usize,
+    is_defined: &F,
+    has_include: &G,
+    has_include_next: &H,
+) -> Result<i64, String>
 where
     F: Fn(&str) -> bool,
+    G: Fn(&str) -> bool,
+    H: Fn(&str) -> bool,
 {
-    let mut left = parse_bit_xor(tokens, pos, is_defined)?;
+    let mut left = parse_bit_xor(tokens, pos, is_defined, has_include, has_include_next)?;
     while *pos < tokens.len() {
         match tokens[*pos] {
             ExprToken::BitOr => {
                 *pos += 1;
-                let right = parse_bit_xor(tokens, pos, is_defined)?;
+                let right = parse_bit_xor(tokens, pos, is_defined, has_include, has_include_next)?;
                 left |= right;
             }
             _ => break,
@@ -337,16 +433,24 @@ where
     Ok(left)
 }
 
-fn parse_bit_xor<F>(tokens: &[ExprToken], pos: &mut usize, is_defined: &F) -> Result<i64, String>
+fn parse_bit_xor<F, G, H>(
+    tokens: &[ExprToken],
+    pos: &mut usize,
+    is_defined: &F,
+    has_include: &G,
+    has_include_next: &H,
+) -> Result<i64, String>
 where
     F: Fn(&str) -> bool,
+    G: Fn(&str) -> bool,
+    H: Fn(&str) -> bool,
 {
-    let mut left = parse_bit_and(tokens, pos, is_defined)?;
+    let mut left = parse_bit_and(tokens, pos, is_defined, has_include, has_include_next)?;
     while *pos < tokens.len() {
         match tokens[*pos] {
             ExprToken::BitXor => {
                 *pos += 1;
-                let right = parse_bit_and(tokens, pos, is_defined)?;
+                let right = parse_bit_and(tokens, pos, is_defined, has_include, has_include_next)?;
                 left ^= right;
             }
             _ => break,
@@ -355,16 +459,24 @@ where
     Ok(left)
 }
 
-fn parse_bit_and<F>(tokens: &[ExprToken], pos: &mut usize, is_defined: &F) -> Result<i64, String>
+fn parse_bit_and<F, G, H>(
+    tokens: &[ExprToken],
+    pos: &mut usize,
+    is_defined: &F,
+    has_include: &G,
+    has_include_next: &H,
+) -> Result<i64, String>
 where
     F: Fn(&str) -> bool,
+    G: Fn(&str) -> bool,
+    H: Fn(&str) -> bool,
 {
-    let mut left = parse_equality(tokens, pos, is_defined)?;
+    let mut left = parse_equality(tokens, pos, is_defined, has_include, has_include_next)?;
     while *pos < tokens.len() {
         match tokens[*pos] {
             ExprToken::BitAnd => {
                 *pos += 1;
-                let right = parse_equality(tokens, pos, is_defined)?;
+                let right = parse_equality(tokens, pos, is_defined, has_include, has_include_next)?;
                 left &= right;
             }
             _ => break,
@@ -373,21 +485,31 @@ where
     Ok(left)
 }
 
-fn parse_equality<F>(tokens: &[ExprToken], pos: &mut usize, is_defined: &F) -> Result<i64, String>
+fn parse_equality<F, G, H>(
+    tokens: &[ExprToken],
+    pos: &mut usize,
+    is_defined: &F,
+    has_include: &G,
+    has_include_next: &H,
+) -> Result<i64, String>
 where
     F: Fn(&str) -> bool,
+    G: Fn(&str) -> bool,
+    H: Fn(&str) -> bool,
 {
-    let mut left = parse_comparison(tokens, pos, is_defined)?;
+    let mut left = parse_comparison(tokens, pos, is_defined, has_include, has_include_next)?;
     while *pos < tokens.len() {
         match tokens[*pos] {
             ExprToken::Equal => {
                 *pos += 1;
-                let right = parse_comparison(tokens, pos, is_defined)?;
+                let right =
+                    parse_comparison(tokens, pos, is_defined, has_include, has_include_next)?;
                 left = i64::from(left == right);
             }
             ExprToken::NotEqual => {
                 *pos += 1;
-                let right = parse_comparison(tokens, pos, is_defined)?;
+                let right =
+                    parse_comparison(tokens, pos, is_defined, has_include, has_include_next)?;
                 left = i64::from(left != right);
             }
             _ => break,
@@ -396,31 +518,39 @@ where
     Ok(left)
 }
 
-fn parse_comparison<F>(tokens: &[ExprToken], pos: &mut usize, is_defined: &F) -> Result<i64, String>
+fn parse_comparison<F, G, H>(
+    tokens: &[ExprToken],
+    pos: &mut usize,
+    is_defined: &F,
+    has_include: &G,
+    has_include_next: &H,
+) -> Result<i64, String>
 where
     F: Fn(&str) -> bool,
+    G: Fn(&str) -> bool,
+    H: Fn(&str) -> bool,
 {
-    let mut left = parse_shift(tokens, pos, is_defined)?;
+    let mut left = parse_shift(tokens, pos, is_defined, has_include, has_include_next)?;
     while *pos < tokens.len() {
         match tokens[*pos] {
             ExprToken::Less => {
                 *pos += 1;
-                let right = parse_shift(tokens, pos, is_defined)?;
+                let right = parse_shift(tokens, pos, is_defined, has_include, has_include_next)?;
                 left = i64::from(left < right);
             }
             ExprToken::LessEqual => {
                 *pos += 1;
-                let right = parse_shift(tokens, pos, is_defined)?;
+                let right = parse_shift(tokens, pos, is_defined, has_include, has_include_next)?;
                 left = i64::from(left <= right);
             }
             ExprToken::Greater => {
                 *pos += 1;
-                let right = parse_shift(tokens, pos, is_defined)?;
+                let right = parse_shift(tokens, pos, is_defined, has_include, has_include_next)?;
                 left = i64::from(left > right);
             }
             ExprToken::GreaterEqual => {
                 *pos += 1;
-                let right = parse_shift(tokens, pos, is_defined)?;
+                let right = parse_shift(tokens, pos, is_defined, has_include, has_include_next)?;
                 left = i64::from(left >= right);
             }
             _ => break,
@@ -429,21 +559,29 @@ where
     Ok(left)
 }
 
-fn parse_shift<F>(tokens: &[ExprToken], pos: &mut usize, is_defined: &F) -> Result<i64, String>
+fn parse_shift<F, G, H>(
+    tokens: &[ExprToken],
+    pos: &mut usize,
+    is_defined: &F,
+    has_include: &G,
+    has_include_next: &H,
+) -> Result<i64, String>
 where
     F: Fn(&str) -> bool,
+    G: Fn(&str) -> bool,
+    H: Fn(&str) -> bool,
 {
-    let mut left = parse_additive(tokens, pos, is_defined)?;
+    let mut left = parse_additive(tokens, pos, is_defined, has_include, has_include_next)?;
     while *pos < tokens.len() {
         match tokens[*pos] {
             ExprToken::ShiftLeft => {
                 *pos += 1;
-                let right = parse_additive(tokens, pos, is_defined)?;
+                let right = parse_additive(tokens, pos, is_defined, has_include, has_include_next)?;
                 left = left.wrapping_shl(right as u32);
             }
             ExprToken::ShiftRight => {
                 *pos += 1;
-                let right = parse_additive(tokens, pos, is_defined)?;
+                let right = parse_additive(tokens, pos, is_defined, has_include, has_include_next)?;
                 left = left.wrapping_shr(right as u32);
             }
             _ => break,
@@ -452,21 +590,31 @@ where
     Ok(left)
 }
 
-fn parse_additive<F>(tokens: &[ExprToken], pos: &mut usize, is_defined: &F) -> Result<i64, String>
+fn parse_additive<F, G, H>(
+    tokens: &[ExprToken],
+    pos: &mut usize,
+    is_defined: &F,
+    has_include: &G,
+    has_include_next: &H,
+) -> Result<i64, String>
 where
     F: Fn(&str) -> bool,
+    G: Fn(&str) -> bool,
+    H: Fn(&str) -> bool,
 {
-    let mut left = parse_multiplicative(tokens, pos, is_defined)?;
+    let mut left = parse_multiplicative(tokens, pos, is_defined, has_include, has_include_next)?;
     while *pos < tokens.len() {
         match tokens[*pos] {
             ExprToken::Plus => {
                 *pos += 1;
-                let right = parse_multiplicative(tokens, pos, is_defined)?;
+                let right =
+                    parse_multiplicative(tokens, pos, is_defined, has_include, has_include_next)?;
                 left = left.wrapping_add(right);
             }
             ExprToken::Minus => {
                 *pos += 1;
-                let right = parse_multiplicative(tokens, pos, is_defined)?;
+                let right =
+                    parse_multiplicative(tokens, pos, is_defined, has_include, has_include_next)?;
                 left = left.wrapping_sub(right);
             }
             _ => break,
@@ -475,25 +623,29 @@ where
     Ok(left)
 }
 
-fn parse_multiplicative<F>(
+fn parse_multiplicative<F, G, H>(
     tokens: &[ExprToken],
     pos: &mut usize,
     is_defined: &F,
+    has_include: &G,
+    has_include_next: &H,
 ) -> Result<i64, String>
 where
     F: Fn(&str) -> bool,
+    G: Fn(&str) -> bool,
+    H: Fn(&str) -> bool,
 {
-    let mut left = parse_unary(tokens, pos, is_defined)?;
+    let mut left = parse_unary(tokens, pos, is_defined, has_include, has_include_next)?;
     while *pos < tokens.len() {
         match tokens[*pos] {
             ExprToken::Multiply => {
                 *pos += 1;
-                let right = parse_unary(tokens, pos, is_defined)?;
+                let right = parse_unary(tokens, pos, is_defined, has_include, has_include_next)?;
                 left = left.wrapping_mul(right);
             }
             ExprToken::Divide => {
                 *pos += 1;
-                let right = parse_unary(tokens, pos, is_defined)?;
+                let right = parse_unary(tokens, pos, is_defined, has_include, has_include_next)?;
                 if right == 0 {
                     return Err("Division by zero".to_string());
                 }
@@ -501,7 +653,7 @@ where
             }
             ExprToken::Modulo => {
                 *pos += 1;
-                let right = parse_unary(tokens, pos, is_defined)?;
+                let right = parse_unary(tokens, pos, is_defined, has_include, has_include_next)?;
                 if right == 0 {
                     return Err("Modulo by zero".to_string());
                 }
@@ -513,46 +665,59 @@ where
     Ok(left)
 }
 
-fn parse_unary<F>(tokens: &[ExprToken], pos: &mut usize, is_defined: &F) -> Result<i64, String>
+#[allow(clippy::too_many_arguments)]
+fn parse_unary<F, G, H>(
+    tokens: &[ExprToken],
+    pos: &mut usize,
+    is_defined: &F,
+    has_include: &G,
+    has_include_next: &H,
+) -> Result<i64, String>
 where
     F: Fn(&str) -> bool,
+    G: Fn(&str) -> bool,
+    H: Fn(&str) -> bool,
 {
     if *pos < tokens.len() {
         match tokens[*pos] {
             ExprToken::Not => {
                 *pos += 1;
-                let expr = parse_unary(tokens, pos, is_defined)?;
+                let expr = parse_unary(tokens, pos, is_defined, has_include, has_include_next)?;
                 return Ok(i64::from(expr == 0));
             }
             ExprToken::BitNot => {
                 *pos += 1;
-                let expr = parse_unary(tokens, pos, is_defined)?;
+                let expr = parse_unary(tokens, pos, is_defined, has_include, has_include_next)?;
                 return Ok(!expr);
             }
             ExprToken::Minus => {
                 *pos += 1;
-                let expr = parse_unary(tokens, pos, is_defined)?;
+                let expr = parse_unary(tokens, pos, is_defined, has_include, has_include_next)?;
                 return Ok(expr.wrapping_neg());
             }
             ExprToken::Plus => {
                 *pos += 1;
-                let expr = parse_unary(tokens, pos, is_defined)?;
+                let expr = parse_unary(tokens, pos, is_defined, has_include, has_include_next)?;
                 return Ok(expr);
             }
             _ => {}
         }
     }
-    parse_primary(tokens, pos, is_defined)
+    parse_primary(tokens, pos, is_defined, has_include, has_include_next)
 }
 
 /// Parse the defined operator: defined identifier or defined(identifier)
-fn parse_defined_operator<F>(
+fn parse_defined_operator<F, G, H>(
     tokens: &[ExprToken],
     pos: &mut usize,
     is_defined: &F,
+    _has_include: &G,
+    _has_include_next: &H,
 ) -> Result<i64, String>
 where
     F: Fn(&str) -> bool,
+    G: Fn(&str) -> bool,
+    H: Fn(&str) -> bool,
 {
     // Check for defined(identifier) form
     if *pos < tokens.len() && matches!(tokens[*pos], ExprToken::LParen) {
@@ -594,9 +759,60 @@ where
     }
 }
 
-fn parse_primary<F>(tokens: &[ExprToken], pos: &mut usize, is_defined: &F) -> Result<i64, String>
+/// Parse a `__has_include` / `__has_include_next` operator applied to a single
+/// string-literal or angle-bracket header argument: `__has_include("x")` or
+/// `__has_include(<x>)`.
+fn parse_has_include<G, H>(
+    tokens: &[ExprToken],
+    pos: &mut usize,
+    has_include: &G,
+    has_include_next: &H,
+    is_next: bool,
+) -> Result<i64, String>
+where
+    G: Fn(&str) -> bool,
+    H: Fn(&str) -> bool,
+{
+    // Require an opening parenthesis.
+    if *pos >= tokens.len() || !matches!(tokens[*pos], ExprToken::LParen) {
+        return Err("Expected ( after __has_include".to_string());
+    }
+    *pos += 1;
+
+    // Build the header string *with* its delimiters (quotes or angle brackets)
+    // so the driver's resolution logic can distinguish local vs system style.
+    let header = match tokens.get(*pos) {
+        Some(ExprToken::StringLiteral(s)) => format!("\"{s}\""),
+        Some(ExprToken::Identifier(s)) if s.starts_with('<') && s.ends_with('>') => s.clone(),
+        _ => return Err("Expected header string after __has_include".to_string()),
+    };
+    *pos += 1;
+
+    if *pos >= tokens.len() || !matches!(tokens[*pos], ExprToken::RParen) {
+        return Err("Expected ) after __has_include argument".to_string());
+    }
+    *pos += 1;
+
+    let found = if is_next {
+        has_include_next(&header)
+    } else {
+        has_include(&header)
+    };
+    Ok(i64::from(found))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_primary<F, G, H>(
+    tokens: &[ExprToken],
+    pos: &mut usize,
+    is_defined: &F,
+    has_include: &G,
+    has_include_next: &H,
+) -> Result<i64, String>
 where
     F: Fn(&str) -> bool,
+    G: Fn(&str) -> bool,
+    H: Fn(&str) -> bool,
 {
     if *pos >= tokens.len() {
         return Err("Unexpected end of expression".to_string());
@@ -610,7 +826,11 @@ where
         ExprToken::Identifier(ident) => {
             *pos += 1;
             if ident == "defined" {
-                parse_defined_operator(tokens, pos, is_defined)
+                parse_defined_operator(tokens, pos, is_defined, has_include, has_include_next)
+            } else if ident == "__has_include" {
+                parse_has_include::<G, H>(tokens, pos, has_include, has_include_next, false)
+            } else if ident == "__has_include_next" {
+                parse_has_include::<G, H>(tokens, pos, has_include, has_include_next, true)
             } else {
                 // Preprocessor treats undefined identifiers as 0
                 Ok(0)
@@ -618,7 +838,7 @@ where
         }
         ExprToken::LParen => {
             *pos += 1;
-            let val = parse_or(tokens, pos, is_defined)?;
+            let val = parse_or(tokens, pos, is_defined, has_include, has_include_next)?;
             if *pos >= tokens.len() || !matches!(tokens[*pos], ExprToken::RParen) {
                 return Err("Expected )".to_string());
             }

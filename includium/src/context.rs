@@ -45,8 +45,16 @@ pub struct PreprocessorContext {
     /// Custom include resolver function
     pub include_resolver: Option<IncludeResolver>,
 
+    /// Ordered directories searched for `#include`/`#include_next`
+    pub include_dirs: Vec<String>,
+
     /// Stack of conditional compilation states
     pub conditional_stack: Vec<ConditionalState>,
+
+    /// Per-macro save stack for `#pragma push_macro`/`pop_macro`.
+    ///
+    /// Each entry is a saved `Macro` definition (or `None` for "was undefined").
+    pub macro_stack: HashMap<String, Vec<Option<Macro>>>,
 
     /// Current file name for error reporting and __FILE__ macro
     pub current_file: String,
@@ -83,7 +91,9 @@ impl PreprocessorContext {
             included_once: HashSet::new(),
             include_stack: Vec::new(),
             include_resolver: None,
+            include_dirs: Vec::new(),
             conditional_stack: Vec::new(),
+            macro_stack: HashMap::new(),
             current_file: "<stdin>".to_string(),
             current_line: 1,
             recursion_limit: 128,
@@ -98,6 +108,7 @@ impl PreprocessorContext {
         self.compiler = config.compiler.clone();
         self.recursion_limit = config.recursion_limit;
         self.include_resolver.clone_from(&config.include_resolver);
+        self.include_dirs = config.include_dirs.clone();
         self.warning_handler.clone_from(&config.warning_handler);
         self.line_ending = config.line_ending.clone();
 
@@ -224,6 +235,36 @@ impl PreprocessorContext {
     /// Remove a macro definition
     pub fn undef(&mut self, name: &str) {
         self.macros.remove(name);
+    }
+
+    /// Save the current definition of a macro onto its push stack (pragma push_macro).
+    ///
+    /// The saved entry is `None` if the macro is currently undefined.
+    pub fn push_macro(&mut self, name: &str) {
+        let saved = self.macros.get(name).cloned();
+        self.macro_stack
+            .entry(name.to_string())
+            .or_default()
+            .push(saved);
+    }
+
+    /// Restore the most recently saved definition of a macro (pragma pop_macro).
+    ///
+    /// If nothing was saved, or the saved state was "undefined", the macro is
+    /// removed. No-op if `push_macro` was never called for `name`.
+    pub fn pop_macro(&mut self, name: &str) {
+        if let Some(stack) = self.macro_stack.get_mut(name)
+            && let Some(saved) = stack.pop()
+        {
+            match saved {
+                Some(mac) => {
+                    self.macros.insert(name.to_string(), mac);
+                }
+                None => {
+                    self.macros.remove(name);
+                }
+            }
+        }
     }
 
     /// Check if a macro is defined

@@ -5,10 +5,47 @@ use crate::error::PreprocessError;
 use crate::macro_def::Macro;
 use crate::token::{ExprToken, Token};
 use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::path::Path;
 use std::rc::Rc;
 
 type MacroArguments = Vec<Vec<Token>>;
+
+/// Extract the quoted macro name from a `push_macro`/`pop_macro` argument.
+///
+/// Accepts either `"NAME"` (quoted) or `<NAME>` (angle-bracket) forms, with
+/// optional surrounding whitespace. Returns `None` if the argument is malformed.
+fn extract_pragma_macro_name(arg: &str) -> Option<String> {
+    let arg = arg.trim();
+    let inner = if let Some(rest) = arg.strip_prefix('"') {
+        rest.strip_suffix('"')
+    } else if let Some(rest) = arg.strip_prefix('<') {
+        rest.strip_suffix('>')
+    } else {
+        None
+    };
+
+    match inner {
+        Some(name) => {
+            let name = name.trim();
+            if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !name.is_empty() {
+                Some(name.to_string())
+            } else {
+                None
+            }
+        }
+        None => None,
+    }
+}
+
+/// Strip the surrounding `()` from a `#pragma push_macro("NAME")` argument
+/// and extract the macro name.
+fn parse_pragma_macro_arg(arg: &str) -> Option<String> {
+    let arg = arg.trim();
+    let arg = arg.strip_prefix('(').unwrap_or(arg);
+    let arg = arg.strip_suffix(')').unwrap_or(arg);
+    extract_pragma_macro_name(arg)
+}
 
 /// Parameters for macro expansion
 struct MacroExpansionParams<'a> {
@@ -284,6 +321,7 @@ impl PreprocessorDriver {
             "define" => self.handle_define(rest, ctx),
             "undef" => self.handle_undef(rest, ctx),
             "include" => self.handle_include(rest, ctx),
+            "include_next" => self.handle_include_next(rest, ctx),
             "ifdef" => {
                 self.handle_ifdef(rest);
                 Ok(None)
@@ -454,26 +492,74 @@ impl PreprocessorDriver {
             return Err(self.directive_error("include", ctx));
         };
 
-        let context = IncludeContext {
-            include_stack: self.context.include_stack.clone(),
-            include_dirs: Vec::new(),
+        let content = self.resolve_include(&p, kind.clone(), None)?;
+
+        self.process_included(&p, kind, &content, ctx)
+    }
+
+    /// Resolve and process a `#include_next` directive (GCC/Clang extension).
+    ///
+    /// Like `#include`, but the search starts *after* the directory of the
+    /// current file, so it finds the next instance of a same-named header on the
+    /// search path. Useful for chaining / overriding system headers.
+    fn handle_include_next(
+        &mut self,
+        rest: &str,
+        ctx: &DiagnosticContext,
+    ) -> Result<Option<String>, PreprocessError> {
+        if !self.can_emit_line() {
+            return Ok(None);
+        }
+
+        let trimmed = rest.trim();
+        let (path, kind) =
+            if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
+                (
+                    Some(trimmed[1..(trimmed.len() - 1)].to_string()),
+                    IncludeKind::Local,
+                )
+            } else if trimmed.starts_with('<') && trimmed.ends_with('>') && trimmed.len() >= 2 {
+                (
+                    Some(trimmed[1..(trimmed.len() - 1)].to_string()),
+                    IncludeKind::System,
+                )
+            } else {
+                (None, IncludeKind::Local)
+            };
+
+        let Some(p) = path else {
+            return Err(self.directive_error("include_next", ctx));
         };
 
-        let Some(resolver) = &self.context.include_resolver else {
-            return Err(self.include_error(&p, ctx));
-        };
+        // Search starting after the directory of the including file.
+        let after_dir = self
+            .context
+            .include_stack
+            .last()
+            .or(Some(&self.context.current_file))
+            .and_then(|f| Path::new(f).parent())
+            .map(|p| p.to_string_lossy().to_string());
 
-        let Some(content) = resolver(&p, kind.clone(), &context) else {
-            return Err(self.include_error(&p, ctx));
-        };
+        let content = self.resolve_include(&p, kind.clone(), after_dir.as_deref())?;
 
+        self.process_included(&p, kind, &content, ctx)
+    }
+
+    /// Shared include resolution + processing logic for `#include` and `#include_next`.
+    fn process_included(
+        &mut self,
+        p: &str,
+        kind: IncludeKind,
+        content: &str,
+        ctx: &DiagnosticContext,
+    ) -> Result<Option<String>, PreprocessError> {
         // Check for cycles
-        if self.context.include_stack.contains(&p) {
+        if self.context.include_stack.iter().any(|s| s == p) {
             return Err(self.generic_error(&format!("Include cycle detected for '{p}'"), ctx));
         }
 
         // Check for #pragma once
-        if content.contains("#pragma once") && self.context.included_once.contains(&p) {
+        if content.contains("#pragma once") && self.context.included_once.contains(p) {
             return Ok(Some(String::new()));
         }
 
@@ -489,23 +575,25 @@ impl PreprocessorDriver {
                 .include_stack
                 .last()
                 .and_then(|including_file| Path::new(including_file).parent())
-                .map(|parent_dir| parent_dir.join(&p))
+                .map(|parent_dir| parent_dir.join(p))
                 .filter(|candidate| candidate.exists())
                 .map_or_else(
-                    || p.clone(),
+                    || p.to_string(),
                     |candidate| candidate.to_string_lossy().to_string(),
                 )
         } else {
-            p.clone()
+            p.to_string()
         };
 
         let mut nested = Self {
             context: PreprocessorContext {
                 macros: self.context.macros.clone(),
                 include_resolver: self.context.include_resolver.clone(),
+                include_dirs: self.context.include_dirs.clone(),
                 recursion_limit: self.context.recursion_limit,
                 included_once: self.context.included_once.clone(),
                 include_stack: self.context.include_stack.clone(),
+                macro_stack: self.context.macro_stack.clone(),
                 disabled_macros: HashSet::new(),
                 conditional_stack: Vec::new(),
                 current_line: 1,
@@ -516,17 +604,80 @@ impl PreprocessorDriver {
             },
         };
 
-        let process_result = nested.process(&content);
+        let process_result = nested.process(content);
         self.context.include_stack.pop();
 
         let processed = process_result?;
         self.context.macros = nested.context.macros;
+        self.context.macro_stack = nested.context.macro_stack;
 
         if content.contains("#pragma once") {
-            self.context.included_once.insert(p);
+            self.context.included_once.insert(p.to_string());
         }
 
         Ok(Some(processed))
+    }
+
+    /// Resolve an include path to its contents.
+    ///
+    /// Search order:
+    /// 1. The custom `include_resolver` (if set) — consulted first for full
+    ///    control; returning `None` falls through to the filesystem.
+    /// 2. For local includes, the directory of the including file is included, unless `after_dir`
+    ///    is set. In this case, directories up to and including it are skipped. This is used by
+    ///    `#include_next`.
+    /// 3. The configured `include_dirs`, in order.
+    fn resolve_include(
+        &self,
+        path: &str,
+        kind: IncludeKind,
+        after_dir: Option<&str>,
+    ) -> Result<String, PreprocessError> {
+        let ctx = DiagnosticContext::new(
+            self.context.current_file.clone(),
+            self.context.current_line,
+            None,
+        );
+
+        // 1. Custom resolver gets first say.
+        if let Some(resolver) = &self.context.include_resolver {
+            let context = IncludeContext {
+                include_stack: self.context.include_stack.clone(),
+                include_dirs: self.context.include_dirs.clone(),
+            };
+            if let Some(content) = resolver(path, kind.clone(), &context) {
+                return Ok(content);
+            }
+        }
+
+        // 2/3. Filesystem search path.
+        let mut search_dirs: Vec<String> = Vec::new();
+        if kind == IncludeKind::Local
+            && let Some(including_file) = self.context.include_stack.last()
+            && let Some(parent) = Path::new(including_file).parent()
+        {
+            search_dirs.push(parent.to_string_lossy().to_string());
+        }
+        search_dirs.extend(self.context.include_dirs.iter().cloned());
+
+        // Apply `#include_next` offset: skip entries up to and including after_dir.
+        if let Some(after) = after_dir {
+            let idx = search_dirs.iter().position(|d| d == after);
+            if let Some(idx) = idx {
+                search_dirs.drain(0..=idx);
+            }
+        }
+
+        for dir in &search_dirs {
+            let full = Path::new(dir).join(path);
+            if full.is_file()
+                && let Ok(content) = fs::read_to_string(&full)
+            {
+                return Ok(content);
+            }
+        }
+
+        Err(self.include_error(path, &ctx))
     }
 
     fn handle_ifdef(&mut self, rest: &str) {
@@ -717,6 +868,18 @@ impl PreprocessorDriver {
                 .included_once
                 .insert(self.context.current_file.clone());
             None
+        } else if let Some(arg) = trimmed.strip_prefix("push_macro") {
+            // #pragma push_macro("NAME") -- save current definition of NAME.
+            if let Some(name) = parse_pragma_macro_arg(arg) {
+                self.context.push_macro(&name);
+            }
+            None
+        } else if let Some(arg) = trimmed.strip_prefix("pop_macro") {
+            // #pragma pop_macro("NAME") -- restore saved definition of NAME.
+            if let Some(name) = parse_pragma_macro_arg(arg) {
+                self.context.pop_macro(&name);
+            }
+            None
         } else {
             Some(format!("#pragma {rest}"))
         }
@@ -741,11 +904,43 @@ impl PreprocessorDriver {
         tokens: &[ExprToken],
         ctx: &DiagnosticContext,
     ) -> Result<i64, PreprocessError> {
-        let result = engine::evaluate_expression_tokens(tokens, |id| self.is_defined(id));
+        let result = engine::evaluate_expression_tokens(
+            tokens,
+            |id| self.is_defined(id),
+            |header| self.has_include(header, false),
+            |header| self.has_include(header, true),
+        );
         match result {
             Ok(val) => Ok(val),
             Err(msg) => Err(self.generic_error(&msg, ctx)),
         }
+    }
+
+    /// Resolve a `__has_include` / `__has_include_next` query against the
+    /// current search path. Returns `true` if the header would be found.
+    fn has_include(&self, header: &str, next: bool) -> bool {
+        let (path, kind) =
+            if let Some(inner) = header.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+                (inner.to_string(), IncludeKind::Local)
+            } else if let Some(inner) = header.strip_prefix('<').and_then(|s| s.strip_suffix('>')) {
+                (inner.to_string(), IncludeKind::System)
+            } else {
+                return false;
+            };
+
+        let after_dir = if next {
+            self.context
+                .include_stack
+                .last()
+                .or(Some(&self.context.current_file))
+                .and_then(|f| Path::new(f).parent())
+                .map(|p| p.to_string_lossy().to_string())
+        } else {
+            None
+        };
+
+        self.resolve_include(&path, kind, after_dir.as_deref())
+            .is_ok()
     }
 
     fn find_next_non_whitespace(&self, tokens: &[Token], start: usize) -> usize {

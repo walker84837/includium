@@ -18,7 +18,10 @@ This repository contains both the core library and a command-line interface (`in
 |:--------|:------------|
 | **Macro Expansion** | Supports both object-like and function-like macros |
 | **Conditional Compilation** | Full support for `#ifdef`, `#ifndef`, `#if`, `#else`, `#elif`, `#endif` |
-| **Include Processing** | Handles file inclusion with custom resolvers |
+| **Include Processing** | Handles file inclusion with custom resolvers and a search path (`-I` / `include_dirs`) |
+| **`#include_next`** | GCC/Clang extension that includes the next matching header on the search path |
+| **`__has_include` / `__has_include_next`** | Header availability checks inside `#if`/`#elif` |
+| **`#pragma push_macro` / `pop_macro`** | Save and restore macro definitions (GCC/MSVC) |
 | **Target-Specific Definitions** | Pre-configured macros for Linux, Windows, and macOS |
 | **Compiler Support** | Mock definitions for GCC, Clang, and MSVC |
 | **C FFI** | Integration capabilities for use with other languages and ecosystems |

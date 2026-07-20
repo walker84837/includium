@@ -340,6 +340,13 @@ fn create_config(cli: &Cli) -> Result<PreprocessorConfig> {
     // Set recursion limit
     config.recursion_limit = cli.recursion_limit;
 
+    // Set include search directories
+    config.include_dirs = cli
+        .include_dirs
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+
     // Setup include resolver
     let include_dirs = cli.include_dirs.clone();
     config.include_resolver = Some(Rc::new(move |path, kind, context| {

@@ -25,6 +25,11 @@ pub struct includium_config {
     pub compiler: c_int,
     /// Recursion limit
     pub recursion_limit: usize,
+    /// Number of include directories in `include_dirs`
+    pub include_dirs_len: usize,
+    /// Pointer to an array of `include_dirs_len` null-terminated include directory paths.
+    /// May be null if `include_dirs_len` is 0.
+    pub include_dirs: *const *const c_char,
     /// Warning handler callback (optional, can be null)
     pub warning_handler: Option<extern "C" fn(*const c_char)>,
 }
@@ -64,9 +69,24 @@ fn preprocessor_config_from_c(
         compiler,
         recursion_limit: config.recursion_limit,
         include_resolver: None,
+        include_dirs: Vec::new(),
         warning_handler: None,
         line_ending: LineEnding::LF,
     };
+
+    // Collect include directories from the C array.
+    if config.include_dirs_len > 0 && !config.include_dirs.is_null() {
+        let dirs =
+            unsafe { std::slice::from_raw_parts(config.include_dirs, config.include_dirs_len) };
+        for &dir_ptr in dirs {
+            if dir_ptr.is_null() {
+                continue;
+            }
+            if let Ok(dir) = unsafe { CStr::from_ptr(dir_ptr).to_str() } {
+                rust_config.include_dirs.push(dir.to_string());
+            }
+        }
+    }
     if let Some(handler) = config.warning_handler {
         let handler_rc = Rc::new(move |msg: &str| {
             let Ok(c_msg) = CString::new(msg) else { return };

@@ -18,7 +18,10 @@
 //! - **Variadic macro support** with `__VA_ARGS__`
 //! - **Stringification** (`#`) and **token pasting** (`##`) operators
 //! - **Full conditional compilation** with nested `#if`, `#ifdef`, `#ifndef`, `#else`, `#elif`, `#endif` blocks
-//! - **Include processing** with custom resolvers and `#pragma once` support
+//! - **Include processing** with custom resolvers, a search path, and `#pragma once` support
+//! - **`#include_next`** directive (GCC/Clang extension) for header chaining
+//! - **`__has_include` / `__has_include_next`** header availability checks
+//! - **`#pragma push_macro` / `pop_macro`** to save and restore macro definitions
 //! - **Predefined macros**: `__FILE__`, `__LINE__`, `__DATE__`, `__TIME__`
 //! - **Built-in compiler intrinsics** and sizeof stubs
 //! - **Target-specific preprocessing** for Linux, Windows, and macOS
@@ -1571,5 +1574,164 @@ FRESH_MACRO
         let mut pp = Preprocessor::new();
         let out = pp.process(input).unwrap();
         assert_eq!(out, "1\n");
+    }
+
+    // -- __has_include / __has_include_next / #include_next / push_macro --
+
+    #[test]
+    fn has_include_local_file_found() {
+        let dir = std::env::temp_dir().join("includium_test_has_include_local");
+        let _ = std::fs::create_dir_all(&dir);
+        let header = dir.join("found.h");
+        std::fs::write(&header, "#define FOUND 1\n").unwrap();
+
+        let mut pp = Preprocessor::new().with_include_resolver(move |p, _kind, _ctx| {
+            if p == "found.h" {
+                Some("#define FOUND 1\n".to_string())
+            } else {
+                None
+            }
+        });
+        // Resolver-based include works (covers __has_include via resolver).
+        let src = r#"
+#if __has_include("found.h")
+int a = 1;
+#else
+int a = 0;
+#endif
+"#;
+        let out = pp.process(src).unwrap();
+        assert!(out.contains("int a = 1;"), "got: {out:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn has_include_missing_is_false() {
+        let mut pp = Preprocessor::new();
+        let src = r#"
+#if __has_include("does_not_exist_xyz.h")
+int a = 1;
+#else
+int a = 0;
+#endif
+"#;
+        let out = pp.process(src).unwrap();
+        assert!(out.contains("int a = 0;"), "got: {out:?}");
+    }
+
+    #[test]
+    fn has_include_via_filesystem_include_dirs() {
+        let dir = std::env::temp_dir().join("includium_test_has_include_fs");
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("present.h"), "#define PRESENT 1\n").unwrap();
+
+        let mut pp = Preprocessor::with_config(
+            &PreprocessorConfig::for_linux().with_include_dir(dir.to_string_lossy().to_string()),
+        );
+        let src = r#"
+#if __has_include(<present.h>)
+int a = 1;
+#else
+int a = 0;
+#endif
+"#;
+        let out = pp.process(src).unwrap();
+        assert!(out.contains("int a = 1;"), "got: {out:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn include_next_skips_first_match() {
+        // Layout:
+        //   root/first/a.h   -> defines A as 1, and is the "including" file's dir
+        //   root/second/a.h  -> defines A as 2
+        // An includer in root/first/ includes <a.h> via #include_next -> should get second/a.h.
+        let root = std::env::temp_dir().join("includium_test_inc_next");
+        let _ = std::fs::remove_dir_all(&root);
+        let first = root.join("first");
+        let second = root.join("second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        std::fs::write(first.join("a.h"), "#define A 1\n").unwrap();
+        std::fs::write(second.join("a.h"), "#define A 2\n").unwrap();
+        std::fs::write(first.join("main.c"), "#include_next <a.h>\nint x = A;\n").unwrap();
+
+        let config = PreprocessorConfig::for_linux()
+            .with_include_dir(first.to_string_lossy().to_string())
+            .with_include_dir(second.to_string_lossy().to_string());
+        let mut pp = PreprocessorDriver::with_config(&config);
+        pp.set_current_file(first.join("main.c").to_string_lossy().to_string());
+        let out = pp
+            .process(&std::fs::read_to_string(first.join("main.c")).unwrap())
+            .unwrap();
+        assert!(out.contains("int x = 2;"), "got: {out:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn push_macro_restores_redefined() {
+        let src = r#"
+#define X 1
+#pragma push_macro("X")
+#undef X
+#define X 99
+int before_pop = X;
+#pragma pop_macro("X")
+int after_pop = X;
+"#;
+        let mut pp = Preprocessor::new();
+        let out = pp.process(src).unwrap();
+        assert!(out.contains("int before_pop = 99;"), "got: {out:?}");
+        assert!(out.contains("int after_pop = 1;"), "got: {out:?}");
+    }
+
+    #[test]
+    fn push_macro_restores_undefined() {
+        let src = r#"
+#define X 1
+#pragma push_macro("X")
+#undef X
+#ifdef X
+int during = 1;
+#else
+int during = 0;
+#endif
+#pragma pop_macro("X")
+#ifdef X
+int after = 1;
+#else
+int after = 0;
+#endif
+"#;
+        let mut pp = Preprocessor::new();
+        let out = pp.process(src).unwrap();
+        assert!(out.contains("int during = 0;"), "got: {out:?}");
+        assert!(out.contains("int after = 1;"), "got: {out:?}");
+    }
+
+    #[test]
+    fn has_include_next_skips_first_on_path() {
+        let root = std::env::temp_dir().join("includium_test_has_next");
+        let _ = std::fs::remove_dir_all(&root);
+        let first = root.join("first");
+        let second = root.join("second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        std::fs::write(first.join("a.h"), "").unwrap();
+        std::fs::write(second.join("a.h"), "").unwrap();
+        // The including file lives in `first`, so __has_include_next sees `second/a.h`.
+        let main_src = "#if __has_include_next(<a.h>)\nint ok = 1;\n#else\nint ok = 0;\n#endif\n";
+        std::fs::write(first.join("main.c"), main_src).unwrap();
+
+        let config = PreprocessorConfig::for_linux()
+            .with_include_dir(first.to_string_lossy().to_string())
+            .with_include_dir(second.to_string_lossy().to_string());
+        let mut pp = PreprocessorDriver::with_config(&config);
+        pp.set_current_file(first.join("main.c").to_string_lossy().to_string());
+        let out = pp
+            .process(&std::fs::read_to_string(first.join("main.c")).unwrap())
+            .unwrap();
+        assert!(out.contains("int ok = 1;"), "got: {out:?}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
