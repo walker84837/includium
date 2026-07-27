@@ -109,7 +109,10 @@ impl PreprocessorDriver {
         driver
     }
 
-    /// Apply configuration to the preprocessor
+    /// Apply configuration to the preprocessor.
+    ///
+    /// Defines built-in macros for the target platform, compiler, standard
+    /// intrinsics, and `sizeof` stubs in addition to copying config fields.
     pub fn apply_config(&mut self, config: &PreprocessorConfig) {
         self.context.apply_config(config);
     }
@@ -134,7 +137,12 @@ impl PreprocessorDriver {
         self.context.current_file = file;
     }
 
-    /// Define a preprocessor macro
+    /// Define a preprocessor macro.
+    ///
+    /// - `name`: macro identifier (e.g. `"MAX"`)
+    /// - `params`: `None` for an object-like macro, `Some(vec![...])` for a function-like macro
+    /// - `body`: replacement text (e.g. `"((a) > (b) ? (a) : (b))"`)
+    /// - `is_variadic`: if `true`, the last parameter collects `__VA_ARGS__`
     pub fn define<S: AsRef<str>>(
         &mut self,
         name: S,
@@ -618,15 +626,38 @@ impl PreprocessorDriver {
         Ok(Some(processed))
     }
 
-    /// Resolve an include path to its contents.
+    /// Resolves an include path to its file contents.
     ///
-    /// Search order:
-    /// 1. The custom `include_resolver` (if set) — consulted first for full
-    ///    control; returning `None` falls through to the filesystem.
-    /// 2. For local includes, the directory of the including file is included, unless `after_dir`
-    ///    is set. In this case, directories up to and including it are skipped. This is used by
-    ///    `#include_next`.
-    /// 3. The configured `include_dirs`, in order.
+    /// This function implements the standard C-family include resolution logic, supporting both
+    /// `#include "..."` (local) and `#include <...>` (system) style includes, plus `#include_next`.
+    ///
+    /// # Search Order
+    ///
+    /// Directories are searched in this order:
+    ///
+    /// 1. **Custom resolver**: If a custom `include_resolver` is configured, it is consulted first
+    ///    and has full control. If it returns `Some`, the search stops immediately. If it returns
+    ///    `None`, the search continues to step 2.
+    ///
+    /// 2. **Local file directory**: For local includes (`kind == IncludeKind::Local`), the
+    ///    directory containing the current file is searched. This is skipped if `after_dir` is
+    ///    provided (see `#include_next` below).
+    ///
+    /// 3. **Configured include directories**: All directories in `include_dirs` are searched in
+    ///    order. Again, if `after_dir` is specified, directories up to and including it are
+    ///    skipped.
+    ///
+    /// For each directory in the search path, the function checks whether `{dir}/{path}` exists
+    /// and is a regular file. The first match is returned.
+    ///
+    /// # Parameters
+    ///
+    /// * `path` - The include path to resolve (e.g., `"stdio.h"` or `"../common/defs.h"`).
+    /// * `kind` - Whether this is a local include (`"..."`) or system include (`<...>`).
+    /// * `after_dir` - Optional directory name used to implement `#include_next`. When provided,
+    ///   all search directories up to and including the one matching `after_dir` are skipped.
+    ///   This allows subsequent includes in the same file to skip past the directory containing
+    ///   the current include, avoiding infinite loops and following standard C preprocessor behavior.
     fn resolve_include(
         &self,
         path: &str,

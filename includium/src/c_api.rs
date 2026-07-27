@@ -15,7 +15,10 @@ use crate::driver::PreprocessorDriver;
 #[repr(C)]
 pub struct includium_ctx(PreprocessorDriver);
 
-/// C-friendly configuration struct for the preprocessor
+/// C-friendly configuration struct for the preprocessor.
+///
+/// All fields must be set. Pass `0` for `recursion_limit` or values `> 10000`
+/// to trigger a validation error.
 #[repr(C)]
 #[allow(non_camel_case_types)]
 pub struct includium_config {
@@ -23,7 +26,7 @@ pub struct includium_config {
     pub target: c_int,
     /// Compiler: 0=GCC, 1=Clang, 2=MSVC
     pub compiler: c_int,
-    /// Recursion limit
+    /// Maximum macro recursion depth (must be 1..=10000)
     pub recursion_limit: usize,
     /// Number of include directories in `include_dirs`
     pub include_dirs_len: usize,
@@ -34,7 +37,7 @@ pub struct includium_config {
     pub warning_handler: Option<extern "C" fn(*const c_char)>,
 }
 
-/// Typedef for `includium_config`
+/// Convenience type alias for [`includium_config`].
 #[allow(non_camel_case_types)]
 pub type includium_config_t = includium_config;
 
@@ -97,11 +100,14 @@ fn preprocessor_config_from_c(
     Ok(rust_config)
 }
 
-/// Create a new preprocessor instance for C API
+/// Create a new preprocessor instance.
+///
+/// Returns a valid handle on success, or `NULL` if `config` validation fails
+/// (check [`includium_last_error`] for the reason). Pass a null `config` to
+/// use the default configuration (Linux, GCC, recursion limit 128).
 ///
 /// # Safety
-/// This function is safe to call from C code.
-/// If config is null, uses default configuration.
+/// `config` must be either null or a valid pointer to an `includium_config`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn includium_new(config: *const includium_config_t) -> *mut includium_ctx {
     let mut driver = PreprocessorDriver::new();
@@ -118,19 +124,23 @@ pub unsafe extern "C" fn includium_new(config: *const includium_config_t) -> *mu
     Box::into_raw(Box::new(includium_ctx(driver)))
 }
 
-/// Get the last error message from the C API
+/// Get the last error message from the C API.
+///
+/// Returns `NULL` when no error has occurred. The returned pointer is valid
+/// until the next C API call that sets an error.
 ///
 /// # Safety
-/// The returned string is valid until the next C API call that sets an error.
+/// The returned pointer must not be freed or modified by the caller.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn includium_last_error() -> *const c_char {
     LAST_ERROR.with(|error| error.borrow().as_ref().map_or(ptr::null(), |s| s.as_ptr()))
 }
 
-/// Free a preprocessor instance created by C API
+/// Free a preprocessor instance created by [`includium_new`].
+/// Passing a null pointer is a safe no-op.
 ///
 /// # Safety
-/// The pointer must have been created by `includium_new` and not already freed.
+/// `ctx` must have been created by `includium_new` and not already freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn includium_free(ctx: *mut includium_ctx) {
     if !ctx.is_null() {
@@ -140,12 +150,16 @@ pub unsafe extern "C" fn includium_free(ctx: *mut includium_ctx) {
     }
 }
 
-/// Process C code and return the preprocessed result (C API)
+/// Process C source code and return the preprocessed result.
+///
+/// Returns a null-terminated string that must be freed with [`includium_free_result`],
+/// or `NULL` on error (check [`includium_last_error`] for details). Returns `NULL`
+/// silently if either `ctx` or `input` is null.
 ///
 /// # Safety
-/// - The `pp` pointer must be valid and created by `includium_new`
-/// - The `input` pointer must point to a valid null-terminated C string
-/// - The returned string must be freed with `includium_free_result`
+/// - `ctx` must be a valid handle created by [`includium_new`]
+/// - `input` must point to a valid null-terminated UTF-8 C string
+/// - The returned string must be freed with [`includium_free_result`]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn includium_process(
     ctx: *mut includium_ctx,
@@ -176,10 +190,11 @@ pub unsafe extern "C" fn includium_process(
     }
 }
 
-/// Free a result string returned by C API
+/// Free a result string returned by [`includium_process`].
+/// Passing a null pointer is a safe no-op.
 ///
 /// # Safety
-/// The pointer must have been returned by `includium_process` and not already freed.
+/// `result` must have been returned by `includium_process` and not already freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn includium_free_result(result: *mut c_char) {
     if !result.is_null() {

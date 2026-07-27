@@ -9,7 +9,10 @@ pub enum IncludeKind {
     System,
 }
 
-/// Context for include resolution
+/// Snapshot of the include state passed to a custom [`IncludeResolver`] callback.
+///
+/// Contains the current include stack (for cycle detection) and the list of
+/// directories being searched for includes.
 #[derive(Clone, Debug, Default)]
 pub struct IncludeContext {
     /// Stack of currently included files for cycle detection and context
@@ -18,10 +21,20 @@ pub struct IncludeContext {
     pub include_dirs: Vec<String>,
 }
 
-/// Type alias for include resolver function
+/// Callback for resolving `#include` directives.
+///
+/// Called when the preprocessor encounters an `#include` after filesystem
+/// search paths have been exhausted. Return `Some(content)` to supply the
+/// file contents, or `None` to fall through to the filesystem resolver.
+///
+/// - `path`: the header name from the directive (e.g. `"foo.h"` or `foo.h`)
+/// - `kind`: whether this is a local (`"..."`) or system (`<...>`) include
+/// - `context`: current include stack and search directories
 pub type IncludeResolver = Rc<dyn Fn(&str, IncludeKind, &IncludeContext) -> Option<String>>;
 
-/// Type alias for warning handler function
+/// Callback invoked on `#warning` directives (GCC/Clang only).
+///
+/// The `&str` parameter contains the raw warning message text.
 pub type WarningHandler = Rc<dyn Fn(&str)>;
 
 /// Target operating system for preprocessing

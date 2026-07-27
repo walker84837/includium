@@ -6,11 +6,6 @@ use crate::context::PreprocessorContext;
 use crate::error::PreprocessError;
 use crate::token::{ExprToken, Token, is_identifier_continue, is_identifier_start};
 
-/// Pure preprocessing engine containing stateless logic
-///
-/// This struct contains all the pure functions that perform preprocessing
-/// operations, making them easy to test and reuse independently of any
-/// preprocessor state.
 /// Parse an identifier from the character iterator
 fn parse_identifier(it: &mut Peekable<Chars>) -> Token {
     let mut s = String::new();
@@ -125,9 +120,35 @@ pub fn tokenize_line(line: &str) -> Vec<Token> {
 }
 
 /// Parse a number token from the character iterator
+/// Handles decimal, hex (0x...), octal (0...), and integer suffixes (L, U, LL, UL, ULL).
 fn parse_number(ch: char, chars: &mut Peekable<Chars>) -> Result<ExprToken, PreprocessError> {
     let mut num = String::new();
     num.push(ch);
+
+    // Check for hex prefix (0x or 0X)
+    if ch == '0' && matches!(chars.peek(), Some(&'x') | Some(&'X')) {
+        if let Some(x) = chars.next() {
+            num.push(x);
+        }
+        while let Some(&d) = chars.peek() {
+            if d.is_ascii_hexdigit() {
+                num.push(d);
+                chars.next();
+            } else {
+                break;
+            }
+        }
+        let _ = consume_int_suffix(chars);
+        let val = i64::from_str_radix(&num, 16).map_err(|_| {
+            PreprocessError::other(
+                "<expression>".to_string(),
+                0,
+                format!("Invalid hex number: {num}"),
+            )
+        })?;
+        return Ok(ExprToken::Number(val));
+    }
+
     while let Some(&d) = chars.peek() {
         if d.is_ascii_digit() {
             num.push(d);
@@ -137,6 +158,8 @@ fn parse_number(ch: char, chars: &mut Peekable<Chars>) -> Result<ExprToken, Prep
         }
     }
 
+    let _ = consume_int_suffix(chars);
+
     num.parse::<i64>().map(ExprToken::Number).map_err(|_| {
         PreprocessError::other(
             "<expression>".to_string(),
@@ -144,6 +167,53 @@ fn parse_number(ch: char, chars: &mut Peekable<Chars>) -> Result<ExprToken, Prep
             format!("Invalid number: {num}"),
         )
     })
+}
+
+/// Consume an optional C integer suffix (u/U, l/L, ll/LL, combinations).
+/// Advances `chars` past the suffix and returns it (empty string if none).
+/// If the consumed characters don't form a valid suffix, `chars` is restored
+/// to its pre-call state so the "suffix" characters remain in the token stream.
+fn consume_int_suffix(chars: &mut Peekable<Chars>) -> String {
+    let saved = chars.clone();
+    let mut suffix = String::new();
+    while let Some(&c) = chars.peek() {
+        if c == 'u' || c == 'U' || c == 'l' || c == 'L' {
+            suffix.push(c);
+            chars.next();
+        } else {
+            break;
+        }
+    }
+    let valid = matches!(
+        suffix.as_str(),
+        "u" | "U"
+            | "l"
+            | "L"
+            | "ul"
+            | "uL"
+            | "Ul"
+            | "UL"
+            | "lu"
+            | "Lu"
+            | "lU"
+            | "LU"
+            | "ll"
+            | "LL"
+            | "ull"
+            | "uLL"
+            | "Ull"
+            | "ULL"
+            | "llu"
+            | "LLu"
+            | "llU"
+            | "LLU"
+    );
+    if valid {
+        suffix
+    } else {
+        *chars = saved;
+        String::new()
+    }
 }
 
 /// Parse an identifier token from the character iterator

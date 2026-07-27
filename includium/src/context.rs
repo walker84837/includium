@@ -103,7 +103,10 @@ impl PreprocessorContext {
         }
     }
 
-    /// Apply configuration to the context
+    /// Apply configuration to the context.
+    ///
+    /// This copies the configuration fields and also defines the built-in macros
+    /// for the target platform, compiler, standard intrinsics, and `sizeof` stubs.
     pub fn apply_config(&mut self, config: &PreprocessorConfig) {
         self.compiler = config.compiler.clone();
         self.recursion_limit = config.recursion_limit;
@@ -185,7 +188,12 @@ impl PreprocessorContext {
         self.define_builtin("__SIZEOF_PTRDIFF_T__", None, "8", false);
     }
 
-    /// Define a preprocessor macro
+    /// Define a preprocessor macro.
+    ///
+    /// - `name`: macro identifier (e.g. `"MAX"`)
+    /// - `params`: `None` for an object-like macro, `Some(vec![...])` for a function-like macro
+    /// - `body`: replacement text (e.g. `"((a) > (b) ? (a) : (b))"`)
+    /// - `is_variadic`: if `true`, the last parameter collects `__VA_ARGS__`
     pub fn define<S: AsRef<str>>(
         &mut self,
         name: S,

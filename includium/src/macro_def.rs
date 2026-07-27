@@ -2,7 +2,10 @@ use std::rc::Rc;
 
 use crate::token::Token;
 
-/// A preprocessor macro definition
+/// A preprocessor macro definition.
+///
+/// This struct is opaque to external consumers -- all fields are `pub(crate)`.
+/// Obtain instances via [`PreprocessorDriver::get_macros()`](crate::PreprocessorDriver::get_macros).
 #[derive(Clone, Debug)]
 pub struct Macro {
     pub(crate) params: Option<Vec<String>>,

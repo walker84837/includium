@@ -5,19 +5,19 @@ use std::io;
 /// Semantic error kinds that can occur during preprocessing
 #[derive(Debug)]
 pub enum PreprocessErrorKind {
-    /// Include file not found
+    /// Include file not found. The `String` contains the requested header path.
     IncludeNotFound(String),
-    /// Malformed preprocessor directive
+    /// Malformed preprocessor directive. The `String` contains the directive name (e.g. `"define"`).
     MalformedDirective(String),
-    /// Macro argument count mismatch
+    /// Macro argument count mismatch. The `String` contains a description of the mismatch.
     MacroArgMismatch(String),
-    /// Macro expansion recursion limit exceeded
+    /// Macro expansion recursion limit exceeded. The `String` contains diagnostic details.
     RecursionLimitExceeded(String),
-    /// Conditional compilation error
+    /// Conditional compilation error (e.g. `#elif without #if`). The `String` contains the details.
     ConditionalError(String),
-    /// I/O error (e.g., file reading/writing)
+    /// I/O error (e.g. file reading/writing during `#include` resolution).
     Io(io::Error),
-    /// Other preprocessing error
+    /// Catch-all for other preprocessing errors. The `String` contains the error message.
     Other(String),
 }
 
@@ -37,7 +37,11 @@ pub struct PreprocessError {
 }
 
 impl PreprocessError {
-    /// Create an include not found error
+    /// Create an include-not-found error.
+    ///
+    /// - `file`: source file containing the `#include` directive
+    /// - `line`: 1-based line number of the directive
+    /// - `path`: header name that was not found (e.g. `"foo.h"`)
     #[inline]
     pub fn include_not_found(file: String, line: usize, path: String) -> Self {
         PreprocessError {
@@ -49,7 +53,11 @@ impl PreprocessError {
         }
     }
 
-    /// Create a malformed directive error
+    /// Create a malformed-directive error.
+    ///
+    /// - `file`: source file containing the malformed directive
+    /// - `line`: 1-based line number
+    /// - `directive`: directive name that was malformed (e.g. `"define"`)
     #[inline]
     pub fn malformed_directive(file: String, line: usize, directive: String) -> Self {
         PreprocessError {
@@ -61,7 +69,11 @@ impl PreprocessError {
         }
     }
 
-    /// Create a macro argument mismatch error
+    /// Create a macro-argument-mismatch error.
+    ///
+    /// - `file`: source file where the macro was invoked
+    /// - `line`: 1-based line number
+    /// - `details`: description of the expected vs actual argument count
     #[inline]
     pub fn macro_arg_mismatch(file: String, line: usize, details: String) -> Self {
         PreprocessError {
@@ -73,7 +85,11 @@ impl PreprocessError {
         }
     }
 
-    /// Create a recursion limit exceeded error
+    /// Create a recursion-limit-exceeded error.
+    ///
+    /// - `file`: source file where the recursion was triggered
+    /// - `line`: 1-based line number
+    /// - `details`: diagnostic details (e.g. macro name)
     #[inline]
     pub fn recursion_limit_exceeded(file: String, line: usize, details: String) -> Self {
         PreprocessError {
@@ -85,7 +101,11 @@ impl PreprocessError {
         }
     }
 
-    /// Create a conditional compilation error
+    /// Create a conditional-compilation error.
+    ///
+    /// - `file`: source file containing the malformed conditional
+    /// - `line`: 1-based line number
+    /// - `details`: description (e.g. `"#elif without #if"`)
     #[inline]
     pub fn conditional_error(file: String, line: usize, details: String) -> Self {
         PreprocessError {
@@ -97,7 +117,11 @@ impl PreprocessError {
         }
     }
 
-    /// Create an I/O error
+    /// Create an I/O error.
+    ///
+    /// - `file`: source file being processed when the I/O error occurred
+    /// - `line`: 1-based line number
+    /// - `error`: the underlying [`io::Error`]
     #[inline]
     pub fn io_error(file: String, line: usize, error: io::Error) -> Self {
         PreprocessError {
@@ -109,7 +133,11 @@ impl PreprocessError {
         }
     }
 
-    /// Create a generic other error
+    /// Create a generic error.
+    ///
+    /// - `file`: source file (or a synthetic identifier like `"<internal>"`)
+    /// - `line`: 1-based line number (or `0` for synthetic locations)
+    /// - `message`: error message
     #[inline]
     pub fn other(file: String, line: usize, message: String) -> Self {
         PreprocessError {
@@ -121,14 +149,17 @@ impl PreprocessError {
         }
     }
 
-    /// Set column information for more precise error location
+    /// Set the 1-based column number for a more precise error location.
     #[must_use]
     pub const fn with_column(mut self, column: usize) -> Self {
         self.column = Some(column);
         self
     }
 
-    /// Set source line for context display
+    /// Set the source line for context display.
+    ///
+    /// When set, the error message includes the source line with a caret (`^`)
+    /// indicator pointing at the column position (if also set via [`Self::with_column`]).
     #[must_use]
     pub fn with_source_line(mut self, source_line: String) -> Self {
         self.source_line = Some(source_line);

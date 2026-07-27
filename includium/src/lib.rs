@@ -206,7 +206,7 @@ pub use error::{PreprocessError, PreprocessErrorKind};
 // but Macro struct is public so it can be returned by get_macros.
 pub use macro_def::Macro;
 
-// Re-export Preprocessor as alias to PreprocessorDriver for backward compatibility
+/// Backward-compatible alias for [`PreprocessorDriver`].
 pub use PreprocessorDriver as Preprocessor;
 
 use std::fs;
