@@ -1581,9 +1581,9 @@ FRESH_MACRO
     #[test]
     fn has_include_local_file_found() {
         let dir = std::env::temp_dir().join("includium_test_has_include_local");
-        let _ = std::fs::create_dir_all(&dir);
+        let _ = fs::create_dir_all(&dir);
         let header = dir.join("found.h");
-        std::fs::write(&header, "#define FOUND 1\n").unwrap();
+        fs::write(&header, "#define FOUND 1\n").unwrap();
 
         let mut pp = Preprocessor::new().with_include_resolver(move |p, _kind, _ctx| {
             if p == "found.h" {
@@ -1602,7 +1602,7 @@ int a = 0;
 "#;
         let out = pp.process(src).unwrap();
         assert!(out.contains("int a = 1;"), "got: {out:?}");
-        let _ = std::fs::remove_dir_all(dir);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1622,8 +1622,8 @@ int a = 0;
     #[test]
     fn has_include_via_filesystem_include_dirs() {
         let dir = std::env::temp_dir().join("includium_test_has_include_fs");
-        let _ = std::fs::create_dir_all(&dir);
-        std::fs::write(dir.join("present.h"), "#define PRESENT 1\n").unwrap();
+        let _ = fs::create_dir_all(&dir);
+        fs::write(dir.join("present.h"), "#define PRESENT 1\n").unwrap();
 
         let mut pp = Preprocessor::with_config(
             &PreprocessorConfig::for_linux().with_include_dir(dir.to_string_lossy().to_string()),
@@ -1637,7 +1637,7 @@ int a = 0;
 "#;
         let out = pp.process(src).unwrap();
         assert!(out.contains("int a = 1;"), "got: {out:?}");
-        let _ = std::fs::remove_dir_all(dir);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1647,14 +1647,14 @@ int a = 0;
         //   root/second/a.h  -> defines A as 2
         // An includer in root/first/ includes <a.h> via #include_next -> should get second/a.h.
         let root = std::env::temp_dir().join("includium_test_inc_next");
-        let _ = std::fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&root);
         let first = root.join("first");
         let second = root.join("second");
-        std::fs::create_dir_all(&first).unwrap();
-        std::fs::create_dir_all(&second).unwrap();
-        std::fs::write(first.join("a.h"), "#define A 1\n").unwrap();
-        std::fs::write(second.join("a.h"), "#define A 2\n").unwrap();
-        std::fs::write(first.join("main.c"), "#include_next <a.h>\nint x = A;\n").unwrap();
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        fs::write(first.join("a.h"), "#define A 1\n").unwrap();
+        fs::write(second.join("a.h"), "#define A 2\n").unwrap();
+        fs::write(first.join("main.c"), "#include_next <a.h>\nint x = A;\n").unwrap();
 
         let config = PreprocessorConfig::for_linux()
             .with_include_dir(first.to_string_lossy().to_string())
@@ -1662,10 +1662,10 @@ int a = 0;
         let mut pp = PreprocessorDriver::with_config(&config);
         pp.set_current_file(first.join("main.c").to_string_lossy().to_string());
         let out = pp
-            .process(&std::fs::read_to_string(first.join("main.c")).unwrap())
+            .process(&fs::read_to_string(first.join("main.c")).unwrap())
             .unwrap();
         assert!(out.contains("int x = 2;"), "got: {out:?}");
-        let _ = std::fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1712,16 +1712,16 @@ int after = 0;
     #[test]
     fn has_include_next_skips_first_on_path() {
         let root = std::env::temp_dir().join("includium_test_has_next");
-        let _ = std::fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&root);
         let first = root.join("first");
         let second = root.join("second");
-        std::fs::create_dir_all(&first).unwrap();
-        std::fs::create_dir_all(&second).unwrap();
-        std::fs::write(first.join("a.h"), "").unwrap();
-        std::fs::write(second.join("a.h"), "").unwrap();
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        fs::write(first.join("a.h"), "").unwrap();
+        fs::write(second.join("a.h"), "").unwrap();
         // The including file lives in `first`, so __has_include_next sees `second/a.h`.
         let main_src = "#if __has_include_next(<a.h>)\nint ok = 1;\n#else\nint ok = 0;\n#endif\n";
-        std::fs::write(first.join("main.c"), main_src).unwrap();
+        fs::write(first.join("main.c"), main_src).unwrap();
 
         let config = PreprocessorConfig::for_linux()
             .with_include_dir(first.to_string_lossy().to_string())
@@ -1729,9 +1729,117 @@ int after = 0;
         let mut pp = PreprocessorDriver::with_config(&config);
         pp.set_current_file(first.join("main.c").to_string_lossy().to_string());
         let out = pp
-            .process(&std::fs::read_to_string(first.join("main.c")).unwrap())
+            .process(&fs::read_to_string(first.join("main.c")).unwrap())
             .unwrap();
         assert!(out.contains("int ok = 1;"), "got: {out:?}");
-        let _ = std::fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // -- Windows target / MSVC configuration tests --
+
+    #[test]
+    fn windows_target_picks_win32_conditional_branch() {
+        let src = r#"
+#ifdef _WIN32
+const char* platform = "Windows";
+#else
+const char* platform = "Other";
+#endif
+"#;
+        let mut pp = Preprocessor::with_config(&PreprocessorConfig::for_windows());
+        let out = pp.process(src).unwrap();
+        assert!(out.contains("Windows"), "got: {out:?}");
+        assert!(!out.contains("Other"), "got: {out:?}");
+    }
+
+    #[test]
+    fn windows_target_excludes_non_windows_macros() {
+        let src = r#"
+#if defined(__linux__) || defined(__APPLE__) || defined(__unix__)
+const char* guess = "unix-like";
+#else
+const char* guess = "windows-only";
+#endif
+"#;
+        let mut pp = Preprocessor::with_config(&PreprocessorConfig::for_windows());
+        let out = pp.process(src).unwrap();
+        assert!(out.contains("windows-only"), "got: {out:?}");
+        assert!(!out.contains("unix-like"), "got: {out:?}");
+    }
+
+    #[test]
+    fn windows_msvc_defines_compiler_version_macros() {
+        let src = r#"
+#if _MSC_VER >= 1900
+int modern_msvc = 1;
+#else
+int modern_msvc = 0;
+#endif
+#ifdef __GNUC__
+int gcc = 1;
+#else
+int gcc = 0;
+#endif
+"#;
+        let mut pp = Preprocessor::with_config(&PreprocessorConfig::for_windows());
+        let out = pp.process(src).unwrap();
+        assert!(out.contains("int modern_msvc = 1;"), "got: {out:?}");
+        assert!(out.contains("int gcc = 0;"), "got: {out:?}");
+    }
+
+    #[test]
+    fn windows_msvc_defines_empty_signal_macros() {
+        // WIN32_LEAN_AND_MEAN and _CRT_SECURE_NO_WARNINGS are defined with an empty value.
+        let src = r#"
+#ifdef WIN32_LEAN_AND_MEAN
+int lean = 1;
+#else
+int lean = 0;
+#endif
+#ifdef _CRT_SECURE_NO_WARNINGS
+int secure = 1;
+#else
+int secure = 0;
+#endif
+#ifdef _MSC_FULL_VER
+int full_ver = 1;
+#else
+int full_ver = 0;
+#endif
+"#;
+        let mut pp = Preprocessor::with_config(&PreprocessorConfig::for_windows());
+        let out = pp.process(src).unwrap();
+        assert!(out.contains("int lean = 1;"), "got: {out:?}");
+        assert!(out.contains("int secure = 1;"), "got: {out:?}");
+        assert!(out.contains("int full_ver = 1;"), "got: {out:?}");
+    }
+
+    #[test]
+    fn windows_target_default_output_uses_crlf() {
+        let src = "#define A 1\nA\n";
+        let mut pp = PreprocessorDriver::with_config(&PreprocessorConfig::for_windows());
+        let out = pp.process(src).unwrap();
+        assert_eq!(out, "1\r\n");
+    }
+
+    #[test]
+    fn linux_and_windows_targets_differ_on_same_input() {
+        let src = r#"
+#ifdef _WIN32
+int width = 4;
+#else
+int width = 0;
+#endif
+"#;
+        let mut linux_pp = Preprocessor::with_config(&PreprocessorConfig::for_linux());
+        let mut windows_pp = Preprocessor::with_config(&PreprocessorConfig::for_windows());
+        let linux_out = linux_pp.process(src).unwrap();
+        let windows_out = windows_pp.process(src).unwrap();
+        assert!(linux_out.contains("int width = 0;"), "got: {linux_out:?}");
+        assert!(
+            windows_out.contains("int width = 4;"),
+            "got: {windows_out:?}"
+        );
+        assert_ne!(linux_out, windows_out);
     }
 }
