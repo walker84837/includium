@@ -51,6 +51,117 @@ pub enum Target {
     MacOS,
 }
 
+/// CPU architecture used for target-specific predefined macros.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Architecture {
+    /// 32-bit x86.
+    X86,
+    /// 64-bit x86.
+    X86_64,
+    /// 32-bit ARM.
+    Arm,
+    /// 64-bit ARM.
+    Aarch64,
+    /// 32-bit RISC-V.
+    Riscv32,
+    /// 64-bit RISC-V.
+    Riscv64,
+    /// An architecture without built-in macro definitions.
+    #[default]
+    Unknown,
+}
+
+impl Architecture {
+    /// Return the architecture of the host compiling includium.
+    #[must_use]
+    pub const fn current() -> Self {
+        #[cfg(target_arch = "x86")]
+        {
+            Self::X86
+        }
+        #[cfg(all(not(target_arch = "x86"), target_arch = "x86_64"))]
+        {
+            Self::X86_64
+        }
+        #[cfg(all(
+            not(target_arch = "x86"),
+            not(target_arch = "x86_64"),
+            target_arch = "arm"
+        ))]
+        {
+            Self::Arm
+        }
+        #[cfg(all(
+            not(target_arch = "x86"),
+            not(target_arch = "x86_64"),
+            not(target_arch = "arm"),
+            target_arch = "aarch64"
+        ))]
+        {
+            Self::Aarch64
+        }
+        #[cfg(all(
+            not(target_arch = "x86"),
+            not(target_arch = "x86_64"),
+            not(target_arch = "arm"),
+            not(target_arch = "aarch64"),
+            target_arch = "riscv32"
+        ))]
+        {
+            Self::Riscv32
+        }
+        #[cfg(all(
+            not(target_arch = "x86"),
+            not(target_arch = "x86_64"),
+            not(target_arch = "arm"),
+            not(target_arch = "aarch64"),
+            not(target_arch = "riscv32"),
+            target_arch = "riscv64"
+        ))]
+        {
+            Self::Riscv64
+        }
+        #[cfg(not(any(
+            target_arch = "x86",
+            target_arch = "x86_64",
+            target_arch = "arm",
+            target_arch = "aarch64",
+            target_arch = "riscv32",
+            target_arch = "riscv64",
+        )))]
+        {
+            Self::Unknown
+        }
+    }
+}
+
+impl Target {
+    /// Return the operating system of the host compiling includium.
+    #[must_use]
+    pub const fn current() -> Self {
+        #[cfg(target_os = "linux")]
+        {
+            Self::Linux
+        }
+        #[cfg(all(not(target_os = "linux"), target_os = "windows"))]
+        {
+            Self::Windows
+        }
+        #[cfg(all(
+            not(target_os = "linux"),
+            not(target_os = "windows"),
+            target_os = "macos"
+        ))]
+        {
+            Self::MacOS
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+        {
+            Self::Linux
+        }
+    }
+}
+
 /// Line ending style for output
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LineEnding {
@@ -121,6 +232,9 @@ pub struct PreprocessorConfig {
     /// Target operating system
     pub target: Target,
 
+    /// Target CPU architecture
+    pub architecture: Architecture,
+
     /// Compiler dialect
     pub compiler: Compiler,
 
@@ -165,6 +279,7 @@ impl PreprocessorConfig {
     pub const fn for_linux() -> Self {
         Self {
             target: Target::Linux,
+            architecture: Architecture::current(),
             compiler: Compiler::GCC,
             standard: CStandard::C11,
             environment: ExecutionEnvironment::Hosted,
@@ -181,6 +296,7 @@ impl PreprocessorConfig {
     pub const fn for_windows() -> Self {
         Self {
             target: Target::Windows,
+            architecture: Architecture::current(),
             compiler: Compiler::MSVC,
             standard: CStandard::C11,
             environment: ExecutionEnvironment::Hosted,
@@ -197,6 +313,7 @@ impl PreprocessorConfig {
     pub const fn for_macos() -> Self {
         Self {
             target: Target::MacOS,
+            architecture: Architecture::current(),
             compiler: Compiler::Clang,
             standard: CStandard::C11,
             environment: ExecutionEnvironment::Hosted,
@@ -206,6 +323,21 @@ impl PreprocessorConfig {
             warning_handler: None,
             line_ending: LineEnding::LF,
         }
+    }
+
+    /// Use the host operating system and architecture as the preprocessing target.
+    #[must_use]
+    pub const fn with_current_target(mut self) -> Self {
+        self.target = Target::current();
+        self.architecture = Architecture::current();
+        self
+    }
+
+    /// Set the target CPU architecture.
+    #[must_use]
+    pub const fn with_architecture(mut self, architecture: Architecture) -> Self {
+        self.architecture = architecture;
+        self
     }
 
     /// Override the compiler for this configuration

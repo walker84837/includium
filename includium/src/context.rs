@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::config::{Compiler, IncludeResolver, LineEnding, Target, WarningHandler};
+use crate::config::{Architecture, Compiler, IncludeResolver, LineEnding, Target, WarningHandler};
 use crate::macro_def::Macro;
 
 use crate::config::{CStandard, ExecutionEnvironment};
@@ -116,19 +116,18 @@ impl PreprocessorContext {
         self.warning_handler.clone_from(&config.warning_handler);
         self.line_ending = config.line_ending;
 
-        self.define_target_macros(config.target);
+        self.define_target_macros(config.target, config.architecture);
         self.define_compiler_macros(config.compiler, config.standard, config.environment);
 
         self.stub_compiler_intrinsics();
         self.define_sizeof_stubs();
     }
 
-    fn define_target_macros(&mut self, target: Target) {
+    fn define_target_macros(&mut self, target: Target, architecture: Architecture) {
         match target {
             Target::Linux => {
                 self.define_builtin("__linux__", None, "1", false);
                 self.define_builtin("__unix__", None, "1", false);
-                self.define_builtin("__LP64__", None, "1", false);
             }
             Target::Windows => {
                 self.define_builtin("_WIN32", None, "1", false);
@@ -139,8 +138,30 @@ impl PreprocessorContext {
                 self.define_builtin("__APPLE__", None, "1", false);
                 self.define_builtin("__MACH__", None, "1", false);
                 self.define_builtin("TARGET_OS_MAC", None, "1", false);
+            }
+        }
+
+        match architecture {
+            Architecture::X86 => self.define_builtin("__i386__", None, "1", false),
+            Architecture::X86_64 => {
+                self.define_builtin("__x86_64__", None, "1", false);
                 self.define_builtin("__LP64__", None, "1", false);
             }
+            Architecture::Arm => self.define_builtin("__arm__", None, "1", false),
+            Architecture::Aarch64 => {
+                self.define_builtin("__aarch64__", None, "1", false);
+                self.define_builtin("__LP64__", None, "1", false);
+            }
+            Architecture::Riscv32 => {
+                self.define_builtin("__riscv", None, "1", false);
+                self.define_builtin("__riscv_xlen", None, "32", false);
+            }
+            Architecture::Riscv64 => {
+                self.define_builtin("__riscv", None, "1", false);
+                self.define_builtin("__riscv_xlen", None, "64", false);
+                self.define_builtin("__LP64__", None, "1", false);
+            }
+            Architecture::Unknown => {}
         }
     }
 
@@ -303,5 +324,31 @@ impl PreprocessorContext {
     #[must_use]
     pub fn get_macros(&self) -> &HashMap<String, Macro> {
         &self.macros
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::PreprocessorConfig;
+
+    #[test]
+    fn x86_64_configuration_defines_glibc_architecture_macros() {
+        let config = PreprocessorConfig::for_linux().with_architecture(Architecture::X86_64);
+        let driver = crate::PreprocessorDriver::with_config(&config);
+
+        assert!(driver.is_defined("__x86_64__"));
+        assert!(driver.is_defined("__LP64__"));
+        assert!(!driver.is_defined("__i386__"));
+    }
+
+    #[test]
+    fn x86_configuration_does_not_define_64_bit_macros() {
+        let config = PreprocessorConfig::for_linux().with_architecture(Architecture::X86);
+        let driver = crate::PreprocessorDriver::with_config(&config);
+
+        assert!(driver.is_defined("__i386__"));
+        assert!(!driver.is_defined("__x86_64__"));
+        assert!(!driver.is_defined("__LP64__"));
     }
 }

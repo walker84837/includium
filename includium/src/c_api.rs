@@ -9,7 +9,7 @@ thread_local! {
 }
 
 use crate::config::{
-    CStandard, Compiler, ExecutionEnvironment, LineEnding, PreprocessorConfig, Target,
+    Architecture, CStandard, Compiler, ExecutionEnvironment, LineEnding, PreprocessorConfig, Target,
 };
 use crate::driver::PreprocessorDriver;
 
@@ -71,6 +71,7 @@ fn preprocessor_config_from_c(
     }
     let mut rust_config = PreprocessorConfig {
         target,
+        architecture: Architecture::current(),
         compiler,
         standard: CStandard::C11,
         environment: ExecutionEnvironment::Hosted,

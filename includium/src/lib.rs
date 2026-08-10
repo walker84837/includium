@@ -195,8 +195,8 @@ mod macro_def;
 mod token;
 
 pub use config::{
-    CStandard, Compiler, ExecutionEnvironment, IncludeContext, IncludeKind, IncludeResolver,
-    LineEnding, PreprocessorConfig, Target, WarningHandler,
+    Architecture, CStandard, Compiler, ExecutionEnvironment, IncludeContext, IncludeKind,
+    IncludeResolver, LineEnding, PreprocessorConfig, Target, WarningHandler,
 };
 pub use context::PreprocessorContext;
 pub use driver::PreprocessorDriver;
