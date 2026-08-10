@@ -195,8 +195,8 @@ mod macro_def;
 mod token;
 
 pub use config::{
-    Compiler, IncludeContext, IncludeKind, IncludeResolver, LineEnding, PreprocessorConfig, Target,
-    WarningHandler,
+    CStandard, Compiler, ExecutionEnvironment, IncludeContext, IncludeKind, IncludeResolver,
+    LineEnding, PreprocessorConfig, Target, WarningHandler,
 };
 pub use context::PreprocessorContext;
 pub use driver::PreprocessorDriver;
@@ -279,6 +279,20 @@ int z = ADD(1, 2);
         let mut pp = Preprocessor::new();
         let out = pp.process(src).unwrap();
         assert!(out.contains("((1)+(2))"));
+    }
+
+    #[test]
+    fn multiline_function_like_macro_invocation() {
+        let src = r#"
+#define SELECT(name, value) name value
+SELECT(
+    int answer,
+    = 42;
+)
+"#;
+        let mut pp = Preprocessor::new();
+        let out = pp.process(src).unwrap();
+        assert!(out.contains("int answer = 42;"));
     }
 
     #[test]
@@ -375,6 +389,54 @@ int x = 1;
     }
 
     #[test]
+    fn expression_conditional() {
+        let src = r#"
+#if 1 ? 7 : 0
+int selected = 1;
+#endif
+#if 0 ? 0 : 7
+int fallback = 1;
+#endif
+"#;
+        let mut pp = Preprocessor::new();
+        let out = pp.process(src).unwrap();
+        assert!(out.contains("int selected = 1;"));
+        assert!(out.contains("int fallback = 1;"));
+    }
+
+    #[test]
+    fn standard_predefined_macros_follow_configuration() {
+        let mut pp = Preprocessor::new();
+        let config = PreprocessorConfig::for_linux()
+            .with_standard(CStandard::C11)
+            .with_environment(ExecutionEnvironment::Freestanding);
+        pp.apply_config(&config);
+        let source = r#"
+#if __STDC__ == 1 && __STDC_HOSTED__ == 0 && __STDC_VERSION__ == 201112L
+int configured = 1;
+#endif
+"#;
+        let out = pp.process(source).unwrap();
+        assert!(out.contains("int configured = 1;"));
+    }
+
+    #[test]
+    fn c90_does_not_define_stdc_version() {
+        let mut pp = Preprocessor::new();
+        pp.apply_config(&PreprocessorConfig::for_linux().with_standard(CStandard::C90));
+        let source = r#"
+#ifdef __STDC_VERSION__
+int should_not_be_emitted;
+#else
+int configured = 1;
+#endif
+"#;
+        let out = pp.process(source).unwrap();
+        assert!(!out.contains("should_not_be_emitted"));
+        assert!(out.contains("int configured = 1;"));
+    }
+
+    #[test]
     fn comment_stripping() {
         let src = r#"
  // This is a comment
@@ -399,6 +461,24 @@ const char* s = STR;
         let out = pp.process(src).unwrap();
         // Comments inside strings should not be stripped
         assert!(out.contains("\"this /* is not a comment */\""));
+    }
+
+    #[test]
+    fn multiline_comments_do_not_create_directives() {
+        let src = r#"
+/*
+#if BROKEN(1, 2)
+int should_not_be_emitted;
+#endif
+*/
+#if 1
+int should_be_emitted;
+#endif
+"#;
+        let mut pp = Preprocessor::new();
+        let out = pp.process(src).unwrap();
+        assert!(!out.contains("should_not_be_emitted"));
+        assert!(out.contains("int should_be_emitted;"));
     }
 
     #[test]
@@ -1524,21 +1604,21 @@ FRESH_MACRO
     #[test]
     fn denormalize_output_to_crlf() {
         let input = "a\nb\nc\n";
-        let result = engine::denormalize_output(input, &LineEnding::CRLF);
+        let result = engine::denormalize_output(input, LineEnding::CRLF);
         assert_eq!(result, "a\r\nb\r\nc\r\n");
     }
 
     #[test]
     fn denormalize_output_to_cr() {
         let input = "a\nb\nc\n";
-        let result = engine::denormalize_output(input, &LineEnding::CR);
+        let result = engine::denormalize_output(input, LineEnding::CR);
         assert_eq!(result, "a\rb\rc\r");
     }
 
     #[test]
     fn denormalize_output_lf_is_noop() {
         let input = "a\nb\nc\n";
-        let result = engine::denormalize_output(input, &LineEnding::LF);
+        let result = engine::denormalize_output(input, LineEnding::LF);
         assert_eq!(result, input);
     }
 

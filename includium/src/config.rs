@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 /// Kind of include directive
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IncludeKind {
     /// Local include with quotes: #include "file.h"
     Local,
@@ -11,21 +11,24 @@ pub enum IncludeKind {
 
 /// Snapshot of the include state passed to a custom [`IncludeResolver`] callback.
 ///
-/// Contains the current include stack (for cycle detection) and the list of
-/// directories being searched for includes.
+/// Contains the current include stack (for cycle detection) and the list of directories being
+/// searched for includes.
 #[derive(Clone, Debug, Default)]
 pub struct IncludeContext {
     /// Stack of currently included files for cycle detection and context
     pub include_stack: Vec<String>,
+
     /// List of include directories to search
     pub include_dirs: Vec<String>,
 }
 
 /// Callback for resolving `#include` directives.
 ///
-/// Called when the preprocessor encounters an `#include` after filesystem
-/// search paths have been exhausted. Return `Some(content)` to supply the
-/// file contents, or `None` to fall through to the filesystem resolver.
+/// Called when the preprocessor encounters an `#include` after filesystem search paths have been
+/// exhausted.
+///
+/// Return `Some(content)` to provide the file contents, or `None` to fall through to the
+/// filesystem resolver.
 ///
 /// - `path`: the header name from the directive (e.g. `"foo.h"` or `foo.h`)
 /// - `kind`: whether this is a local (`"..."`) or system (`<...>`) include
@@ -38,7 +41,7 @@ pub type IncludeResolver = Rc<dyn Fn(&str, IncludeKind, &IncludeContext) -> Opti
 pub type WarningHandler = Rc<dyn Fn(&str)>;
 
 /// Target operating system for preprocessing
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
     /// Linux operating system
     Linux,
@@ -49,7 +52,7 @@ pub enum Target {
 }
 
 /// Line ending style for output
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LineEnding {
     /// Line Feed (`\n`) - Unix, Linux, macOS
     #[default]
@@ -61,7 +64,7 @@ pub enum LineEnding {
 }
 
 /// Compiler dialect for preprocessing
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Compiler {
     /// GNU Compiler Collection
     GCC,
@@ -71,28 +74,81 @@ pub enum Compiler {
     MSVC,
 }
 
+/// C language standard used for standard predefined macros.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CStandard {
+    /// ISO C90/C89. `__STDC_VERSION__` is not defined.
+    C90,
+    /// ISO C95 amendment. `__STDC_VERSION__` is `199409L`.
+    C95,
+    /// ISO C99. `__STDC_VERSION__` is `199901L`.
+    C99,
+    /// ISO C11. `__STDC_VERSION__` is `201112L`.
+    #[default]
+    C11,
+    /// ISO C17/C18. `__STDC_VERSION__` is `201710L`.
+    C17,
+    /// ISO C23. `__STDC_VERSION__` is `202311L`.
+    C23,
+}
+
+impl CStandard {
+    pub(crate) const fn version_macro(self) -> Option<&'static str> {
+        match self {
+            Self::C90 => None,
+            Self::C95 => Some("199409L"),
+            Self::C99 => Some("199901L"),
+            Self::C11 => Some("201112L"),
+            Self::C17 => Some("201710L"),
+            Self::C23 => Some("202311L"),
+        }
+    }
+}
+
+/// Execution environment used for the `__STDC_HOSTED__` macro.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ExecutionEnvironment {
+    /// A hosted implementation with the standard library available.
+    #[default]
+    Hosted,
+
+    /// A freestanding implementation without the hosted standard library.
+    Freestanding,
+}
+
 /// Configuration for the C preprocessor
 pub struct PreprocessorConfig {
     /// Target operating system
     pub target: Target,
+
     /// Compiler dialect
     pub compiler: Compiler,
+
+    /// C language standard used for standard predefined macros.
+    pub standard: CStandard,
+
+    /// Hosted or freestanding execution environment.
+    pub environment: ExecutionEnvironment,
+
     /// Maximum recursion depth for macro expansion
     pub recursion_limit: usize,
+
     /// Custom include file resolver function
     ///
-    /// This is consulted *before* the built-in filesystem search path. Returning
-    /// `None` falls back to searching `include_dirs` (and, for local includes, the
-    /// directory of the including file).
+    /// This is consulted *before* the built-in filesystem search path. Returning `None` falls back
+    /// to searching `include_dirs` (and, for local includes, the directory of the including file).
     pub include_resolver: Option<IncludeResolver>,
+
     /// Ordered list of directories to search for `#include`/`#include_next`.
     ///
-    /// For local includes (`#include "x"`), the directory of the including file is
-    /// searched first, then these directories in order. For system includes
-    /// (`#include <x>`), only these directories are searched.
+    /// For local includes (`#include "x"`), the directory of the including file is searched first,
+    /// then these directories in order. For system includes (`#include <x>`), only these
+    /// directories are searched.
     pub include_dirs: Vec<String>,
+
     /// Optional warning handler for #warning directives
     pub warning_handler: Option<WarningHandler>,
+
     /// Line ending style for output
     pub line_ending: LineEnding,
 }
@@ -110,6 +166,8 @@ impl PreprocessorConfig {
         Self {
             target: Target::Linux,
             compiler: Compiler::GCC,
+            standard: CStandard::C11,
+            environment: ExecutionEnvironment::Hosted,
             recursion_limit: 128,
             include_resolver: None,
             include_dirs: Vec::new(),
@@ -124,6 +182,8 @@ impl PreprocessorConfig {
         Self {
             target: Target::Windows,
             compiler: Compiler::MSVC,
+            standard: CStandard::C11,
+            environment: ExecutionEnvironment::Hosted,
             recursion_limit: 128,
             include_resolver: None,
             include_dirs: Vec::new(),
@@ -138,6 +198,8 @@ impl PreprocessorConfig {
         Self {
             target: Target::MacOS,
             compiler: Compiler::Clang,
+            standard: CStandard::C11,
+            environment: ExecutionEnvironment::Hosted,
             recursion_limit: 128,
             include_resolver: None,
             include_dirs: Vec::new(),
@@ -150,6 +212,20 @@ impl PreprocessorConfig {
     #[must_use]
     pub const fn with_compiler(mut self, compiler: Compiler) -> Self {
         self.compiler = compiler;
+        self
+    }
+
+    /// Set the C language standard used by the preprocessor.
+    #[must_use]
+    pub const fn with_standard(mut self, standard: CStandard) -> Self {
+        self.standard = standard;
+        self
+    }
+
+    /// Set whether the target is hosted or freestanding.
+    #[must_use]
+    pub const fn with_environment(mut self, environment: ExecutionEnvironment) -> Self {
+        self.environment = environment;
         self
     }
 
@@ -169,8 +245,8 @@ impl PreprocessorConfig {
 
     /// Add a directory to the include search path.
     ///
-    /// Directories are searched in the order they are added. For `#include "x"`
-    /// the including file's directory is searched before these.
+    /// Directories are searched in the order they are added. For `#include "x"` the including
+    /// file's directory is searched before these.
     #[must_use]
     pub fn with_include_dir(mut self, dir: impl Into<String>) -> Self {
         self.include_dirs.push(dir.into());

@@ -254,26 +254,27 @@ impl PreprocessorDriver {
         let normalized = engine::normalize_input(input);
         let spliced = engine::line_splice(&normalized);
         let pragma_processed = engine::process_pragma(&spliced);
+        let comments_stripped = engine::strip_comments(&pragma_processed);
         let mut out_lines: Vec<String> = Vec::new();
         self.context.conditional_stack.clear();
         self.context.current_line = 1;
 
-        for current_line_str in pragma_processed.lines() {
-            let stripped_line = engine::strip_comments(current_line_str);
+        for current_line_str in Self::logical_lines(&comments_stripped) {
+            let stripped_line = &current_line_str;
             let ctx = DiagnosticContext::new(
                 self.context.current_file.clone(),
                 self.context.current_line,
                 Some(current_line_str.to_string()),
             );
 
-            if let Some(directive) = Self::extract_directive(&stripped_line) {
+            if let Some(directive) = Self::extract_directive(stripped_line) {
                 // Line is a directive - handle it and never emit the raw text,
                 // even when the directive produces no output (e.g. #define, #undef).
                 if let Some(content) = self.handle_directive(directive, &ctx)? {
                     out_lines.push(content);
                 }
             } else if self.can_emit_line() {
-                let tokens = engine::tokenize_line(&stripped_line);
+                let tokens = engine::tokenize_line(stripped_line);
                 let expanded_tokens = self.expand_tokens(&tokens, 0, &ctx)?;
                 let reconstructed = engine::tokens_to_string(&expanded_tokens);
                 out_lines.push(reconstructed);
@@ -293,13 +294,72 @@ impl PreprocessorDriver {
         if self.context.include_stack.is_empty() {
             Ok(engine::denormalize_output(
                 &result,
-                &self.context.line_ending,
+                self.context.line_ending,
             ))
         } else {
             Ok(result)
         }
     }
 
+    /// Combine physical lines when a parenthesized macro invocation spans them.
+    ///
+    /// C permits macro calls such as `__REDIRECT(name, (prototype), alias)` to span lines without
+    /// a backslash. Keeping those lines separate prevents the macro argument parser from seeing
+    /// the closing parentheses.
+    fn logical_lines(input: &str) -> Vec<String> {
+        let mut lines = Vec::new();
+        let mut pending = String::new();
+        let mut depth = 0i32;
+
+        for line in input.lines() {
+            if pending.is_empty() {
+                pending.push_str(line);
+            } else {
+                pending.push(' ');
+                pending.push_str(line);
+            }
+            depth += Self::parenthesis_delta(line);
+
+            if depth <= 0 {
+                lines.push(std::mem::take(&mut pending));
+                depth = 0;
+            }
+        }
+
+        if !pending.is_empty() {
+            lines.push(pending);
+        }
+        lines
+    }
+
+    fn parenthesis_delta(line: &str) -> i32 {
+        let mut delta = 0;
+        let mut quote = None;
+        let mut escaped = false;
+
+        for ch in line.chars() {
+            if let Some(current_quote) = quote {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == current_quote {
+                    quote = None;
+                }
+                continue;
+            }
+
+            if ch == '"' || ch == '\'' {
+                quote = Some(ch);
+            } else if ch == '(' {
+                delta += 1;
+            } else if ch == ')' {
+                delta -= 1;
+            }
+        }
+
+        delta
+    }
     /// Checks if the current line should be emitted in the output based on the active
     /// state of conditional compilation directives (#if, #ifdef, #else, etc.).
     fn can_emit_line(&self) -> bool {
@@ -500,7 +560,7 @@ impl PreprocessorDriver {
             return Err(self.directive_error("include", ctx));
         };
 
-        let content = self.resolve_include(&p, kind.clone(), None)?;
+        let content = self.resolve_include(&p, kind, None)?;
 
         self.process_included(&p, kind, &content, ctx)
     }
@@ -548,7 +608,7 @@ impl PreprocessorDriver {
             .and_then(|f| Path::new(f).parent())
             .map(|p| p.to_string_lossy().to_string());
 
-        let content = self.resolve_include(&p, kind.clone(), after_dir.as_deref())?;
+        let content = self.resolve_include(&p, kind, after_dir.as_deref())?;
 
         self.process_included(&p, kind, &content, ctx)
     }
@@ -606,9 +666,9 @@ impl PreprocessorDriver {
                 conditional_stack: Vec::new(),
                 current_line: 1,
                 current_file: resolved_path,
-                compiler: self.context.compiler.clone(),
+                compiler: self.context.compiler,
                 warning_handler: self.context.warning_handler.clone(),
-                line_ending: self.context.line_ending.clone(),
+                line_ending: self.context.line_ending,
             },
         };
 
@@ -676,7 +736,7 @@ impl PreprocessorDriver {
                 include_stack: self.context.include_stack.clone(),
                 include_dirs: self.context.include_dirs.clone(),
             };
-            if let Some(content) = resolver(path, kind.clone(), &context) {
+            if let Some(content) = resolver(path, kind, &context) {
                 return Ok(content);
             }
         }

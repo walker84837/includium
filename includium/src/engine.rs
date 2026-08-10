@@ -329,6 +329,8 @@ pub fn tokenize_expression(expr: &str) -> Result<Vec<ExprToken>, PreprocessError
             '*' => ExprToken::Multiply,
             '/' => ExprToken::Divide,
             '%' => ExprToken::Modulo,
+            '?' => ExprToken::Question,
+            ':' => ExprToken::Colon,
             c if c.is_whitespace() => continue,
             '!' | '=' | '>' | '&' | '|' => parse_two_char_operator(ch, &mut chars)?,
             _ => {
@@ -412,7 +414,7 @@ where
     H: Fn(&str) -> bool,
 {
     let mut pos = 0;
-    let result = parse_or(
+    let result = parse_conditional(
         tokens,
         &mut pos,
         &is_defined,
@@ -423,6 +425,37 @@ where
         return Err("Unexpected tokens at end of expression".to_string());
     }
     Ok(result)
+}
+
+fn parse_conditional<IsDefined, HasInclude, HasIncludeNext>(
+    tokens: &[ExprToken],
+    pos: &mut usize,
+    is_defined: &IsDefined,
+    has_include: &HasInclude,
+    has_include_next: &HasIncludeNext,
+) -> Result<i64, String>
+where
+    IsDefined: Fn(&str) -> bool,
+    HasInclude: Fn(&str) -> bool,
+    HasIncludeNext: Fn(&str) -> bool,
+{
+    let condition = parse_or(tokens, pos, is_defined, has_include, has_include_next)?;
+    if *pos >= tokens.len() || !matches!(tokens[*pos], ExprToken::Question) {
+        return Ok(condition);
+    }
+
+    *pos += 1;
+    let when_true = parse_conditional(tokens, pos, is_defined, has_include, has_include_next)?;
+    if *pos >= tokens.len() || !matches!(tokens[*pos], ExprToken::Colon) {
+        return Err("Expected : after ? in conditional expression".to_string());
+    }
+    *pos += 1;
+    let when_false = parse_conditional(tokens, pos, is_defined, has_include, has_include_next)?;
+    Ok(if condition != 0 {
+        when_true
+    } else {
+        when_false
+    })
 }
 
 fn parse_or<F, G, H>(
@@ -908,7 +941,7 @@ where
         }
         ExprToken::LParen => {
             *pos += 1;
-            let val = parse_or(tokens, pos, is_defined, has_include, has_include_next)?;
+            let val = parse_conditional(tokens, pos, is_defined, has_include, has_include_next)?;
             if *pos >= tokens.len() || !matches!(tokens[*pos], ExprToken::RParen) {
                 return Err("Expected )".to_string());
             }
@@ -950,6 +983,11 @@ fn handle_block_comment(chars: &mut Peekable<Chars>, result: &mut String) {
     for c in chars.by_ref() {
         if prev == '*' && c == '/' {
             break;
+        }
+        if c == '\n' {
+            // Preserve physical lines so directives after a block comment stay
+            // on their original line during preprocessing.
+            result.push('\n');
         }
         prev = c;
     }
@@ -1003,7 +1041,7 @@ pub fn normalize_input(input: &str) -> String {
 /// The input is expected to be `\n`-separated (as produced by `normalize_input`
 /// and all internal processing). This function replaces each `\n` with the
 /// chosen output ending.
-pub fn denormalize_output(input: &str, ending: &LineEnding) -> String {
+pub fn denormalize_output(input: &str, ending: LineEnding) -> String {
     match ending {
         LineEnding::LF => input.to_string(),
         LineEnding::CRLF => input.replace('\n', "\r\n"),

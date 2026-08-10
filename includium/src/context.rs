@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::config::{Compiler, IncludeResolver, LineEnding, Target, WarningHandler};
 use crate::macro_def::Macro;
 
+use crate::config::{CStandard, ExecutionEnvironment};
 use crate::{PreprocessorConfig, engine};
 use std::rc::Rc;
 
@@ -108,21 +109,21 @@ impl PreprocessorContext {
     /// This copies the configuration fields and also defines the built-in macros
     /// for the target platform, compiler, standard intrinsics, and `sizeof` stubs.
     pub fn apply_config(&mut self, config: &PreprocessorConfig) {
-        self.compiler = config.compiler.clone();
+        self.compiler = config.compiler;
         self.recursion_limit = config.recursion_limit;
         self.include_resolver.clone_from(&config.include_resolver);
         self.include_dirs = config.include_dirs.clone();
         self.warning_handler.clone_from(&config.warning_handler);
-        self.line_ending = config.line_ending.clone();
+        self.line_ending = config.line_ending;
 
-        self.define_target_macros(&config.target);
-        self.define_compiler_macros(&config.compiler);
+        self.define_target_macros(config.target);
+        self.define_compiler_macros(config.compiler, config.standard, config.environment);
 
         self.stub_compiler_intrinsics();
         self.define_sizeof_stubs();
     }
 
-    fn define_target_macros(&mut self, target: &Target) {
+    fn define_target_macros(&mut self, target: Target) {
         match target {
             Target::Linux => {
                 self.define_builtin("__linux__", None, "1", false);
@@ -143,7 +144,24 @@ impl PreprocessorContext {
         }
     }
 
-    fn define_compiler_macros(&mut self, compiler: &Compiler) {
+    fn define_compiler_macros(
+        &mut self,
+        compiler: Compiler,
+        standard: CStandard,
+        environment: ExecutionEnvironment,
+    ) {
+        // These standard predefined macros are required by system headers before compiler-specific
+        // feature checks are evaluated.
+        self.define_builtin("__STDC__", None, "1", false);
+        let hosted = match environment {
+            ExecutionEnvironment::Hosted => "1",
+            ExecutionEnvironment::Freestanding => "0",
+        };
+        self.define_builtin("__STDC_HOSTED__", None, hosted, false);
+        if let Some(version) = standard.version_macro() {
+            self.define_builtin("__STDC_VERSION__", None, version, false);
+        }
+
         match compiler {
             Compiler::GCC => {
                 // GCC 11.2.0

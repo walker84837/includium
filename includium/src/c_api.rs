@@ -8,7 +8,9 @@ thread_local! {
     static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
 }
 
-use crate::config::{Compiler, LineEnding, PreprocessorConfig, Target};
+use crate::config::{
+    CStandard, Compiler, ExecutionEnvironment, LineEnding, PreprocessorConfig, Target,
+};
 use crate::driver::PreprocessorDriver;
 
 /// Opaque C handle. Thin wrapper - all logic lives in `PreprocessorDriver`.
@@ -70,6 +72,8 @@ fn preprocessor_config_from_c(
     let mut rust_config = PreprocessorConfig {
         target,
         compiler,
+        standard: CStandard::C11,
+        environment: ExecutionEnvironment::Hosted,
         recursion_limit: config.recursion_limit,
         include_resolver: None,
         include_dirs: Vec::new(),
