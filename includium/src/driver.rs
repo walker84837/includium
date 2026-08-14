@@ -792,10 +792,24 @@ impl PreprocessorDriver {
         rest: &str,
         ctx: &DiagnosticContext,
     ) -> Result<Option<String>, PreprocessError> {
-        let evaluated = self.evaluate_expression(rest, ctx)?;
+        // A `#if` inside a skipped branch still goes on the conditional stack to keep nesting
+        // balanced, but its expression must not be evaluated (identifiers aren't expanded and it
+        // isn't parsed while inactive).
+        //
+        // Standard C only scans a skipped `#if` for balanced delimiters. Parsing it as active
+        // can reject valid headers (e.g. a false `#ifdef`'s expression that isn't meant to be
+        // evaluated).
+        let active = self.context.conditional_stack.iter().all(|s| s.is_active);
+
+        let evaluated = if active {
+            self.evaluate_expression(rest, ctx)?
+        } else {
+            false
+        };
         self.context
             .conditional_stack
             .push(ConditionalState::new(evaluated));
+
         Ok(None)
     }
 

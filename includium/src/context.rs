@@ -116,14 +116,19 @@ impl PreprocessorContext {
         self.warning_handler.clone_from(&config.warning_handler);
         self.line_ending = config.line_ending;
 
-        self.define_target_macros(config.target, config.architecture);
+        self.define_target_macros(config.target, config.architecture, config.compiler);
         self.define_compiler_macros(config.compiler, config.standard, config.environment);
 
         self.stub_compiler_intrinsics();
         self.define_sizeof_stubs();
     }
 
-    fn define_target_macros(&mut self, target: Target, architecture: Architecture) {
+    fn define_target_macros(
+        &mut self,
+        target: Target,
+        architecture: Architecture,
+        compiler: Compiler,
+    ) {
         match target {
             Target::Linux => {
                 self.define_builtin("__linux__", None, "1", false);
@@ -141,27 +146,58 @@ impl PreprocessorContext {
             }
         }
 
-        match architecture {
-            Architecture::X86 => self.define_builtin("__i386__", None, "1", false),
-            Architecture::X86_64 => {
+        // Architecture macros depend on the compiler dialect: GCC/Clang expose `__x86_64__` and
+        // `__i386__`, while MSVC exposes `_M_X64`/`_M_IX86`, and the LP64 model macros must be
+        // omitted on the LLP64 Windows ABI.
+        //
+        // Emitting the wrong dialect's macros makes system headers misidentify the target and fail
+        // to preprocess/compile.
+        let is_msvc = compiler == Compiler::MSVC;
+
+        match (architecture, is_msvc) {
+            (Architecture::X86, false) => self.define_builtin("__i386__", None, "1", false),
+            (Architecture::X86, true) => {
+                self.define_builtin("_M_IX86", None, "600", false);
+            }
+            (Architecture::X86_64, false) => {
                 self.define_builtin("__x86_64__", None, "1", false);
-                self.define_builtin("__LP64__", None, "1", false);
+                // `__LP64__` only holds for the SysV LP64 ABIs (Linux, macOS);
+                // Windows remains LLP64 even under MinGW, so it is not defined there.
+                if target != Target::Windows {
+                    self.define_builtin("__LP64__", None, "1", false);
+                }
             }
-            Architecture::Arm => self.define_builtin("__arm__", None, "1", false),
-            Architecture::Aarch64 => {
+            (Architecture::X86_64, true) => {
+                self.define_builtin("_M_X64", None, "100", false);
+                self.define_builtin("_M_AMD64", None, "100", false);
+                self.define_builtin("_WIN64", None, "1", false);
+            }
+            (Architecture::Arm, false) => self.define_builtin("__arm__", None, "1", false),
+            (Architecture::Arm, true) => self.define_builtin("_M_ARM", None, "700", false),
+            (Architecture::Aarch64, false) => {
                 self.define_builtin("__aarch64__", None, "1", false);
-                self.define_builtin("__LP64__", None, "1", false);
+                if target != Target::Windows {
+                    self.define_builtin("__LP64__", None, "1", false);
+                }
             }
-            Architecture::Riscv32 => {
+            (Architecture::Aarch64, true) => {
+                self.define_builtin("_M_ARM64", None, "100", false);
+            }
+            (Architecture::Riscv32, false) => {
                 self.define_builtin("__riscv", None, "1", false);
                 self.define_builtin("__riscv_xlen", None, "32", false);
             }
-            Architecture::Riscv64 => {
+            (Architecture::Riscv64, false) => {
                 self.define_builtin("__riscv", None, "1", false);
                 self.define_builtin("__riscv_xlen", None, "64", false);
-                self.define_builtin("__LP64__", None, "1", false);
+                if target != Target::Windows {
+                    self.define_builtin("__LP64__", None, "1", false);
+                }
             }
-            Architecture::Unknown => {}
+            (Architecture::Riscv32, true) | (Architecture::Riscv64, true) => {
+                // MSVC does not define RISC-V target macros; nothing to emit.
+            }
+            (Architecture::Unknown, _) => {}
         }
     }
 
