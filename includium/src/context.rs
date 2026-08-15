@@ -176,6 +176,9 @@ impl PreprocessorContext {
             (Architecture::Arm, true) => self.define_builtin("_M_ARM", None, "700", false),
             (Architecture::Aarch64, false) => {
                 self.define_builtin("__aarch64__", None, "1", false);
+                if target == Target::MacOS {
+                    self.define_builtin("__arm64__", None, "1", false);
+                }
                 if target != Target::Windows {
                     self.define_builtin("__LP64__", None, "1", false);
                 }
@@ -386,5 +389,14 @@ mod tests {
         assert!(driver.is_defined("__i386__"));
         assert!(!driver.is_defined("__x86_64__"));
         assert!(!driver.is_defined("__LP64__"));
+    }
+
+    #[test]
+    fn macos_aarch64_configuration_defines_apple_architecture_macro() {
+        let config = PreprocessorConfig::for_macos().with_architecture(Architecture::Aarch64);
+        let driver = crate::PreprocessorDriver::with_config(&config);
+
+        assert!(driver.is_defined("__aarch64__"));
+        assert!(driver.is_defined("__arm64__"));
     }
 }
