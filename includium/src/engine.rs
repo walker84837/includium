@@ -139,7 +139,7 @@ fn parse_number(ch: char, chars: &mut Peekable<Chars>) -> Result<ExprToken, Prep
             }
         }
         let _ = consume_int_suffix(chars);
-        let val = i64::from_str_radix(&num, 16).map_err(|_| {
+        let val = i64::from_str_radix(&num[2..], 16).map_err(|_| {
             PreprocessError::other(
                 "<expression>".to_string(),
                 0,

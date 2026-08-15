@@ -341,6 +341,18 @@ int x = 1;
     }
 
     #[test]
+    fn expression_hex_integer() {
+        let src = r#"
+#if 0x7fffffff == 2147483647
+int x = 1;
+#endif
+"#;
+        let mut pp = Preprocessor::new();
+        let out = pp.process(src).unwrap();
+        assert!(out.contains("int x = 1;"));
+    }
+
+    #[test]
     fn expression_logical() {
         let src = r#"
 #if (1 && 0) || (0 && 1) || (1 && 1)
